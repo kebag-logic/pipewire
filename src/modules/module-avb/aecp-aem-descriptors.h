@@ -55,7 +55,6 @@
 #define AVB_AEM_DESC_PTP_PORT			0x0028
 #define AVB_AEM_DESC_MAX_17221   		0x0029
 
-
 #define AVB_AEM_DESC_INVALID			0xffff
 
 struct avb_aem_desc_entity {
