@@ -11,8 +11,6 @@
 int handle_cmd_set_configuration(struct aecp *aecp, int64_t now,
                                 const void *m, int len);
 
-int handle_unsol_set_configuration(struct aecp *aecp, int64_t now, uint64_t ctrler_id);
-
 int handle_cmd_get_configuration(struct aecp *aecp, int64_t now,
     const void *m, int len);
 

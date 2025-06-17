@@ -9,7 +9,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+
+#include "aecp-aem-descriptors.h"
 #include "internal.h"
+#include "utils.h"
 
 struct aem_state_var_info {
     /** The name of the var for debug */
@@ -45,6 +48,12 @@ struct aecp_aem_base_info {
 
     /** Check the need for an update, that is usually updated when setting var. */
     bool needs_update;
+
+    /**
+     * To avoid sending on every change for unsol notifications, only once a
+     * a second
+     * */
+    int64_t last_update;
 
     /** timeout absolute time*/
     int64_t expire_timeout;
@@ -200,12 +209,11 @@ struct aecp_aem_counter_stream_input_state {
     uint32_t frame_rx;
 };
 
-struct aecp_aem_stream_output_state {
+struct aecp_aem_stream_input_state {
     struct aecp_aem_counter_stream_input_state counters;
     struct stream stream;
     struct avb_aem_desc_stream desc;
 };
-
 
 /**
  * Milan v1.2 Table 5.17: GET_COUNTERS Stream Output counters
@@ -220,15 +228,22 @@ struct aecp_aem_counter_stream_output_state {
 };
 
 struct aecp_aem_stream_output_state {
-    struct aecp_aem_counter_stream_output_state counters;
-    struct stream stream;
-    struct avb_aem_desc_stream desc;
-};
-
-struct aecp_aem_stream_input_state {
     struct aecp_aem_counter_stream_input_state counters;
     struct stream stream;
     struct avb_aem_desc_stream desc;
 };
+
+static inline int aecp_aem_request_unsollicted_notifications(
+    struct aecp_aem_desc_base *base, uint64_t ctrler_id
+)
+{
+    base->base_info.needs_update = true;
+    base->base_info.controller_entity_id = ctrler_id;
+
+    return 0;
+}
+
+// For Refactory todo remove
+
 
 #endif // AVB_AECP_AEM_STATE_H

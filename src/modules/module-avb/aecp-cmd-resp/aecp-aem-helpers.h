@@ -36,24 +36,22 @@ static inline int reply_not_supported(struct aecp *aecp, const void *m, int len)
 	return reply_status(aecp, AVB_AECP_AEM_STATUS_NOT_SUPPORTED, m, len);
 }
 
-static inline int reply_locked(struct aecp *aecp, const void *m, int len)
+static inline int reply_locked_desc(struct aecp *aecp, struct descriptor *desc,
+	const void *m, int len)
 {
-	uint8_t buf[512];
+	uint8_t buf[128];
 	struct avb_ethernet_header *h = (void*)buf;
 	struct avb_packet_aecp_header *reply = SPA_PTROFF(h, sizeof(*h), void);
 	struct avb_packet_aecp_aem *p_reply = (void*)reply;
+	struct aecp_aem_entity_state *entity_state;
+	struct aecp_aem_lock_state  *lock;
 	struct avb_packet_aecp_aem_lock *ae_reply;
-	struct aecp_aem_lock_state lock = {0};
-	int rc;
-	uint64_t target_id;
+
+	entity_state = desc->ptr;
+	lock = &entity_state->lock_state;
 
 	memcpy(buf, m, len);
 	ae_reply = (struct avb_packet_aecp_aem_lock*)p_reply->payload;
-	target_id = htobe64(reply->target_guid);
-	rc = aecp_aem_get_state_var(aecp, target_id, aecp_aem_lock, 0, &lock);
-	if (rc) {
-		return reply_not_supported(aecp, m, len);
-	}
 
 	AVB_PACKET_AECP_SET_MESSAGE_TYPE(reply, AVB_AECP_MESSAGE_TYPE_AEM_RESPONSE);
 	AVB_PACKET_AECP_SET_STATUS(reply, AVB_AECP_AEM_STATUS_ENTITY_LOCKED);
@@ -62,9 +60,19 @@ static inline int reply_locked(struct aecp *aecp, const void *m, int len)
 	* The locked_id field is set to zero (0) for a command, and is set to the
 	* Entity ID of the ATDECC Controller that is holding the lock in a response.
 	*/
-	ae_reply->locked_guid = htobe64(lock.locked_id);
+	ae_reply->locked_guid = htobe64(lock->locked_id);
 
 	return avb_server_send_packet(aecp->server, h->src, AVB_TSN_ETH, buf, len);
+}
+
+static inline int reply_locked(struct aecp *aecp, const void *m, int len)
+{
+	struct descriptor *desc;
+	desc = server_find_descriptor(aecp->server, AVB_AEM_DESC_ENTITY, 0);
+	if (desc == NULL)
+		return -1;
+
+	return reply_locked_desc(aecp, desc, m, len);
 }
 
 static inline int reply_no_resources(struct aecp *aecp, const void *m, int len)

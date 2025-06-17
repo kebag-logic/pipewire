@@ -4,7 +4,7 @@
 #include "acmp.h"
 #include <limits.h>
 
-typedef void* (es_builder_cb_t)(struct server *server, uint16_t type,
+typedef void* (*es_builder_cb_t) (struct server *server, uint16_t type,
             uint16_t index, size_t size, void *ptr);
 
 // Milan v1.2 5.3.4.1 ENTITY Lock state and
@@ -22,7 +22,7 @@ static void *es_builder_desc_entity(struct server *server, uint16_t type,
 
     entity_state.lock_state.base_info.expire_timeout = LONG_MAX;
     for (unsigned int unsol_index = 0; unsol_index < AECP_AEM_MILAN_MAX_CONTROLLER;
-            unsol_index < AECP_AEM_MILAN_MAX_CONTROLLER;  unsol_index++) {
+            unsol_index++) {
         entity_state.unsol_notif_state[unsol_index].base_info.expire_timeout = LONG_MAX;
     }
 
@@ -94,21 +94,21 @@ static void *es_builder_desc_stream_output(struct server *server, uint16_t type,
     // FIXME same as stream input, to discuss.
     // The order is important, the stream must be created
     // to get the id then the ACMP shall be created.
-    // Unfortunately for now the acmp uses the stream id from the stream structu
+    // Unfortunately for now the acmp uses the stream id from the stream structure
     // with the ASUMPTION that the stream structure is initialized. So to fix
     // this issue there are 2 approach: Use CONTAINER_OF macros in the acmp
     // state machine to retrieve the stream ID from the stream directly. Or the
     // the stream module initiate the ACMP state machine. However there would be
     // a cyclic dependency.
 
-    if (server_create_stream(server, &stream_output.streams, SPA_DIRECTION_OUTPUT,
+    if (server_create_stream(server, &stream_output.stream, SPA_DIRECTION_OUTPUT,
             index)) {
-        pw_log_error("Could not create the OUTPUT stream")
+        pw_log_error("Could not create the OUTPUT stream");
         spa_assert(0);
     }
 
     if (avb_acmp_register_talker(server, &stream_output.stream)){
-        pw_log_error("Could not register the ACMP talker")
+        pw_log_error("Could not register the ACMP talker");
         spa_assert(0);
     }
 
@@ -168,14 +168,14 @@ static void *es_builder_desc_stream_input(struct server *server, uint16_t type,
     // the stream module initiate the ACMP state machine. However there would be
     // a cyclic dependency.
 
-    if (server_create_stream(server, &stream_input.streams, SPA_DIRECTION_INPUT,
+    if (server_create_stream(server, &stream_input.stream, SPA_DIRECTION_INPUT,
             index)) {
-        pw_log_error("Could not create the INPUT stream")
+        pw_log_error("Could not create the INPUT stream");
         spa_assert(0);
     }
 
     if (avb_acmp_register_listener(server, &stream_input.stream)){
-        pw_log_error("Could not register the listener")
+        pw_log_error("Could not register the listener");
         spa_assert(0);
     }
 
@@ -188,47 +188,6 @@ static void *es_builder_desc_stream_input(struct server *server, uint16_t type,
     }
 
     return ptr_alloc;
-}
-
-// Milan v1.2 5.3.9 STREAM_OUTPUT_PORT
-static void *es_builder_desc_stream_port_output(struct server *server, uint16_t type,
-            uint16_t index, size_t size, void *ptr)
-{
-    // Milan V1.2 Clause 5.3.9.1 Channel mapping
-    // For now not used.
-
-    pw_log_error("Not Implemented\n")
-    spa_assert(0);
-
-    return NULL;
-
-}
-
-// Milan v1.2 5.3.10 STREAM_INPUT_PORT
-static void *es_builder_desc_stream_port_input(struct server *server, uint16_t type,
-            uint16_t index, size_t size, void *ptr)
-{
-    // Milan V1.2 Clause 5.3.10.1 Channel mapping
-    // For now not used.
-    pw_log_error("Not Implemented\n")
-    spa_assert(0);
-
-    return NULL;
-}
-
-
-// Milan v1.2 5.3.11 CLOCK_DOMAIN
-static void *es_builder_desc_clock_domain(struct server *server, uint16_t type,
-            uint16_t index, size_t size, void *ptr)
-{
-    // Milan V1.2 Clause 5.3.11.1 Clocks source
-    // Milan V1.2 Clause 5.3.11.2 Diagnostic counters: Lock / Unlocked.
-
-    // For now not used.
-    pw_log_error("Not Implemented\n")
-    spa_assert(0);
-
-    return NULL;
 }
 
 // Milan v1.2 5.3.12 Identify
@@ -255,10 +214,10 @@ static void *es_builder_desc_control(struct server *server, uint16_t type,
     [type] = { .build_descriptor_cb = callback  }
 
 struct es_builder_st {
-    es_builder_cb_t es_builder_cb;
+    es_builder_cb_t build_descriptor_cb;
 };
 
-static struct es_bulder_st es_builder[AVB_AEM_DESC_MAX_17221] =
+static struct es_builder_st es_builder[AVB_AEM_DESC_MAX_17221] =
 {
     HELPER_ES_BUIDLER(AVB_AEM_DESC_ENTITY, es_builder_desc_entity),
     HELPER_ES_BUIDLER(AVB_AEM_DESC_AVB_INTERFACE, es_builder_desc_avb_interface),
@@ -267,14 +226,6 @@ static struct es_bulder_st es_builder[AVB_AEM_DESC_MAX_17221] =
 
     HELPER_ES_BUIDLER(AVB_AEM_DESC_CONTROL, es_builder_desc_control),
 
-    // HELPER_ES_BUIDLER(AVB_AEM_DESC_STREAM_PORT_OUTPUT,
-    //      es_builder_desc_stream_port_output),
-
-    // HELPER_ES_BUIDLER(AVB_AEM_DESC_STREAM_PORT_INPUT,
-    //    es_builder_desc_stream_port_input),
-
-
-    // HELPER_ES_BUIDLER(AVB_AEM_DESC_CLOCK_DOMAIN,es_builder_desc_clock_domain),
 };
 
 
@@ -292,9 +243,19 @@ int endstation_builder_add_descriptor(struct server *server, uint16_t type,
         spa_assert(0);
     }
 
-    if (!es_builder[type]) {
-            return server_add_descriptor(server, type, index, size, ptr);
+    if (!es_builder[type].build_descriptor_cb) {
+        if(!server_add_descriptor(server, type, index, size, ptr)) {
+            pw_log_error("Could not allocate descriptor %u at index %u the avb"
+                         " aem type\n", type, index);
+            spa_assert(0);
+        }
     }
 
-    return es_builder[type].es_builder_cb(server, type, index, size, ptr);
+    if (es_builder[type].build_descriptor_cb(server, type, index, size, ptr)) {
+            pw_log_error("Could not allocate specific descriptr %u at index %u"
+                         " the avb aem type\n",  type, index);
+            spa_assert(0);
+    }
+
+    return 0;
 }

@@ -7,6 +7,7 @@
 
 #include "packets.h"
 #include "internal.h"
+#include "stream.h"
 
 /*IEEE 1722.1-2021, Table 8-2 - message_type field*/
 #define AVB_ACMP_MESSAGE_TYPE_CONNECT_TX_COMMAND		0
@@ -82,25 +83,6 @@
 #define AVB_MILAN_ACMP_FLAGS_CL_ENTRIES_VALID					(1<<8)
 #define AVB_MILAN_ACMP_FLAGS_NO_SRP								(1<<7)
 #define AVB_MILAN_ACMP_FLAGS_UDP								(1<<6)
-
-enum milan_acmp_talker_sta {
-    MILAN_AMCP_TALKER_STA_MAX
-};
-
-/** Milan v1.2 ACMP */
-enum milan_acmp_listener_sta {
-    MILAN_ACMP_LISTENER_STA_UNBOUND,
-    MILAN_ACMP_LISTENER_STA_PRB_W_AVAIL,
-    MILAN_ACMP_LISTENER_STA_PRB_W_DELAY,
-    MILAN_ACMP_LISTENER_STA_PRB_W_RESP,
-    MILAN_ACMP_LISTENER_STA_PRB_W_RESP2,
-    MILAN_ACMP_LISTENER_STA_PRB_W_RETRY,
-    MILAN_ACMP_LISTENER_STA_SETTLED_NO_RSV,
-    MILAN_ACMP_LISTENER_STA_SETTLED_RSV_OK,
-
-    MILAN_ACMP_LISTENER_STA_MAX,
-};
-
 struct avb_packet_acmp {
     struct avb_packet_header hdr;
     uint64_t stream_id;

@@ -27,8 +27,37 @@ static int reply_invalid_clock_source(struct aecp *aecp,
     return reply_success(aecp,  buf, len);
 }
 
+static int handle_unsol_set_clock_source(struct aecp *aecp, struct descriptor *desc,
+    uint64_t ctrler_id)
+{
+    uint8_t buf[128];
+    struct avb_ethernet_header *h = (struct avb_ethernet_header *) buf;
+    struct avb_packet_aecp_aem *p = SPA_PTROFF(h, sizeof(*h), void);
+    struct avb_packet_aecp_aem_setget_clock_source *sclk_source;
+    struct avb_aem_desc_clock_domain* dclk_domain;
+    size_t len;
+    int rc;
+
+    memset(buf, 0,  sizeof(buf));
+    sclk_source = (struct avb_packet_aecp_aem_setget_clock_source *) p->payload;
+
+    dclk_domain = (struct avb_aem_desc_clock_domain*) desc->ptr;
+    sclk_source->clock_source_index = htons(dclk_domain->clock_source_index);
+    sclk_source->descriptor_id = htons(desc->index);
+    sclk_source->descriptor_type = htons(desc->type);
+
+    AVB_PACKET_AEM_SET_COMMAND_TYPE(p, AVB_AECP_AEM_CMD_SET_CLOCK_SOURCE);
+    len = sizeof(*p) + sizeof(*sclk_source) + sizeof(*h);
+
+    rc = reply_unsolicited_notifications_ctrler_id(aecp, ctrler_id,
+                                                    buf, len, false);
+
+    return rc;
+}
+
  /* IEEE 1722.1-2021, 7.4.23. SET_CLOCK_SOURCE Command */
-int handle_cmd_set_clock_source(struct aecp *aecp, int64_t now, const void *m, int len)
+int handle_cmd_set_clock_source(struct aecp *aecp, int64_t now, const void *m,
+     int len)
 {
     int rc;
     struct server *server = aecp->server;
@@ -64,36 +93,11 @@ int handle_cmd_set_clock_source(struct aecp *aecp, int64_t now, const void *m, i
 
     dclk_domain->clock_source_index = htons(clock_src_index);
 
-    return reply_success(aecp, m, len);
-}
+    rc = reply_success(aecp, m, len);
+    if (rc) {
+        pw_log_error("Reply failed for set_clock_source\n");
+        return -1;
+    }
 
-int handle_unsol_set_clock_source(struct aecp *aecp, int64_t now, uint64_t ctrler_id)
-{
-    uint8_t buf[128];
-    struct descriptor *desc;
-    struct avb_ethernet_header *h = (struct avb_ethernet_header *) buf;
-    struct avb_packet_aecp_aem *p = SPA_PTROFF(h, sizeof(*h), void);
-    struct avb_packet_aecp_aem_setget_clock_source *sclk_source;
-    struct avb_aem_desc_clock_domain* dclk_domain;
-    struct aecp_aem_base_info b_state = { 0 };
-    uint64_t target_id = aecp->server->entity_id;
-    size_t len;
-    int rc;
-
-    memset(buf, 0,  sizeof(buf));
-    sclk_source = (struct avb_packet_aecp_aem_setget_clock_source *) p->payload;
-
-    dclk_domain = (struct avb_aem_desc_clock_domain*) desc->ptr;
-    sclk_source->clock_source_index = htons(dclk_domain->clock_source_index);
-    sclk_source->descriptor_id = htons(desc->index);
-    sclk_source->descriptor_type = htons(desc->type);
-
-    AVB_PACKET_AEM_SET_COMMAND_TYPE(p, AVB_AECP_AEM_CMD_SET_CLOCK_SOURCE);
-    len = sizeof(*p) + sizeof(*sclk_source) + sizeof(*h);
-
-    b_state.needs_update = true;
-    rc = reply_unsolicited_notifications(aecp, &b_state,
-         buf, len, false);
-
-    return 0;
+    return handle_unsol_set_clock_source(aecp, desc, ctrlr_id);
 }

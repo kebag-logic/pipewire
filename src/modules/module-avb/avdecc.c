@@ -254,7 +254,6 @@ error_no_source:
 struct server *avdecc_server_new(struct impl *impl, struct spa_dict *props)
 {
 	struct server *server;
-	struct avb_aecp* _aecp;
 	const char *str;
 	int res = 0;
 
@@ -286,6 +285,7 @@ struct server *avdecc_server_new(struct impl *impl, struct spa_dict *props)
 	server->mvrp = avb_mvrp_register(server);
 	server->adp  = avb_adp_register(server);
 	server->acmp = avb_acmp_register(server);
+	server->aecp = avb_aecp_register(server);
 
 	server->domain_attr = avb_msrp_attribute_new(server->msrp,
 			AVB_MSRP_ATTRIBUTE_TYPE_DOMAIN);

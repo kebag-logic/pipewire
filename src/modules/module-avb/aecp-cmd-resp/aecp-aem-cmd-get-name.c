@@ -32,7 +32,6 @@ int handle_cmd_get_name(struct aecp *aecp, int64_t now, const void *m,
 	struct descriptor *desc;
     uint16_t name_idx;
     uint64_t target_entity_id;
-    int rc;
     char *dest;
 
     // If we are not spoken to directly, we will not answer

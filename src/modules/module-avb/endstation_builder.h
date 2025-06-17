@@ -4,8 +4,8 @@
 /* SPDX-License-Identifier: MIT */
 
 
-#ifndef __ENDSTATION_H__
-#define __ENDSTATION_H__
+#ifndef __ENDSTATION_BUILDER_H__
+#define __ENDSTATION_BUILDER_H__
 
 #include "internal.h"
 
@@ -13,4 +13,4 @@ int endstation_builder_add_descriptor(struct server *server, uint16_t type,
      uint16_t index, size_t size, void *ptr);
 
 
-#endif // __ENDSTATION_H__
+#endif // __ENDSTATION_BUILDER_H__

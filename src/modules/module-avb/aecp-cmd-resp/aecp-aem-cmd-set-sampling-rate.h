@@ -11,6 +11,4 @@
 int handle_cmd_set_sampling_rate(struct aecp *aecp, int64_t now, const void *m,
     int len);
 
-int handle_unsol_sampling_rate(struct aecp *aecp, int64_t now);
-
 #endif //__AECP_AEM_CMD_SET_SAMPLING_RATE_H__

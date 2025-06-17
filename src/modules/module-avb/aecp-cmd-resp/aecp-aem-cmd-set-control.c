@@ -17,11 +17,85 @@
 #include "aecp-aem-unsol-helper.h"
 
 
+/**
+ * TODO FUTURE: Make this descriptor more complex to handle all type of
+ *  CONTROLS possible.
+ */
+
 /** For future use */
 // const static unsigned int v_size_value[] = {
 // 	[AECP_AEM_CTRL_LINEAR_INT8] = 1,
 // 	[AECP_AEM_CTRL_LINEAR_UINT8] = 1,
 // };
+
+
+static int handle_unsol_control_common(struct aecp *aecp, struct descriptor *desc,
+									bool has_expired)
+{
+	uint8_t buf[1024];
+	void *m = buf;
+	struct avb_ethernet_header *h = m;
+	struct avb_packet_aecp_aem *p = SPA_PTROFF(h, sizeof(*h), void);
+	uint8_t value_desc, *value;
+	struct avb_aem_desc_value_format *desc_formats;
+	struct avb_aem_desc_control *ctrl_desc;
+	struct aecp_aem_control_state *ctrl_state;
+	struct avb_packet_aecp_aem_setget_control *control;
+	uint64_t target_id = aecp->server->entity_id;
+
+	size_t len = sizeof (*h) + sizeof(*p) + sizeof(*control) + sizeof (value_desc);
+	int rc = 0;
+
+	ctrl_state = (struct aecp_aem_control_state *) desc->ptr;
+	ctrl_desc = &ctrl_state->desc;
+	desc_formats = ctrl_desc->value_format;
+
+	/** Reset the buffer */
+	memset(buf, 0, sizeof(buf));
+	/* Only support Milan so far */
+	control = (struct avb_packet_aecp_aem_setget_control *) p->payload;
+	control->descriptor_id = htons(desc->index);
+	control->descriptor_type = htons(desc->type);
+	p->aecp.target_guid = htobe64(target_id);
+	ctrl_desc = (struct avb_aem_desc_control *) desc->ptr;
+	desc_formats = (struct avb_aem_desc_value_format *) ctrl_desc->value_format;
+
+	/** Only support identify so far */
+	value = (uint8_t*)control->payload;
+	if (has_expired) {
+		desc_formats->current_value = 0;
+	}
+
+	value_desc = desc_formats->current_value;
+	*value = value_desc;
+
+	AVB_PACKET_AEM_SET_COMMAND_TYPE(p, AVB_AECP_AEM_CMD_SET_CONTROL);
+	rc = reply_unsolicited_notifications(aecp, &ctrl_state->base.base_info,
+				buf, len, has_expired);
+	if (rc) {
+		pw_log_error("Unsolicited notification failed \n");
+		return rc;
+	}
+
+	return rc;
+}
+
+/**
+ * @brief handle unsolicited notification for the set-control
+ */
+static int handle_unsol_set_control(struct aecp *aecp, struct descriptor *desc,
+	uint64_t ctrler_id)
+{
+	int rc;
+	/* Internal descriptor info */
+
+	rc = handle_unsol_control_common(aecp, desc, false);
+	if (rc) {
+		spa_assert(0);
+	}
+
+	return rc;
+}
 
 /* IEEE 1722.1-2021, Sec. 7.4.25. SET_CONTROL Command*/
 int handle_cmd_set_control(struct aecp *aecp, int64_t now, const void *m,
@@ -30,15 +104,15 @@ int handle_cmd_set_control(struct aecp *aecp, int64_t now, const void *m,
 	struct server *server = aecp->server;
 	const struct avb_ethernet_header *h = m;
 	const struct avb_packet_aecp_aem *p = SPA_PTROFF(h, sizeof(*h), void);
-	/* Internals */
-	struct aecp_aem_control_state ctrl_state = {0};
 
+	/* Internals */
+	/** For the control */
 	struct descriptor *desc;
 	struct avb_aem_desc_control *ctrl_desc;
+	struct aecp_aem_control_state *ctrl_state;
 	struct avb_aem_desc_value_format *desc_formats;
 	struct avb_packet_aecp_aem_setget_control *control;
-	uint16_t desc_type, desc_id;
-	uint16_t ctrler_id;
+	uint16_t desc_type, desc_id, ctrler_id;
 	uint8_t old_control_value;
 	// Type of value for now is assumed to be uint8_t only Milan identify supported
 	uint8_t *value_req;
@@ -54,15 +128,8 @@ int handle_cmd_set_control(struct aecp *aecp, int64_t now, const void *m,
 	if (desc == NULL)
 		return reply_status(aecp, AVB_AECP_AEM_STATUS_NO_SUCH_DESCRIPTOR, p, len);
 
-	rc = aecp_aem_get_state_var(aecp, htobe64(p->aecp.target_guid),
-		 	aecp_aem_control, desc_id, &ctrl_state);
-	if (rc) {
-		spa_assert(0);
-	}
-
-	ctrl_state.base_desc.desc = desc;
-
-	ctrl_desc = (struct avb_aem_desc_control *) desc->ptr;
+	ctrl_state = (struct aecp_aem_control_state *) desc->ptr;
+	ctrl_desc = &ctrl_state->desc;
 	desc_formats = ctrl_desc->value_format;
 
 	// Store old control value for success or fail response
@@ -94,77 +161,55 @@ int handle_cmd_set_control(struct aecp *aecp, int64_t now, const void *m,
 	desc_formats->current_value = *value_req;
 
 	/** Doing so will ask for unsolicited notifications */
-	rc = aecp_aem_set_state_var(aecp, htobe64(p->aecp.target_guid), ctrler_id,
-		 	aecp_aem_control, desc_id, &ctrl_state);
-
+	rc = aecp_aem_request_unsollicted_notifications(&ctrl_state->base, ctrler_id);
 	if (rc) {
 		spa_assert(0);
 	}
 
-    return reply_success(aecp, m, len);
+    rc = reply_success(aecp, m, len);
+	if (rc) {
+		pw_log_error("Could not send the set-control response\n");
+		return -1;
+	}
+
+	return handle_unsol_set_control(aecp, desc, ctrler_id);
 }
 
-int handle_unsol_set_control(struct aecp *aecp, int64_t now, uint64_t ctrler_id)
+
+/** TODO is this necessary for the IDENTIFY control ? */
+int handle_unsol_timer_set_control(struct aecp *aecp, int64_t now)
 {
-	uint8_t buf[1024];
-	void *m = buf;
-	struct avb_ethernet_header *h = m;
-	struct avb_packet_aecp_aem *p = SPA_PTROFF(h, sizeof(*h), void);
-	struct aecp_aem_control_state ctrl_state = {0};
-
-	/* Internal descriptor info */
 	struct descriptor *desc;
-	struct avb_aem_desc_control *ctrl_desc;
-	struct avb_aem_desc_value_format *desc_formats;
-	struct avb_packet_aecp_aem_setget_control *control;
+	struct aecp_aem_control_state *ctrl_state;
+	uint32_t desc_id;
+	bool has_expired;
+	int rc;
 
-	uint8_t value_desc, *value;
-	uint64_t target_id = aecp->server->entity_id;
-	size_t len = sizeof (*h) + sizeof(*p) + sizeof(*control) + sizeof (value_desc);
-	int rc = 0;
-	bool has_expired = false;
+#define MAX_ID_DESC 65535
 
-	memset(buf, 0, sizeof(buf));
-	rc = aecp_aem_get_state_var(aecp, target_id,
-			aecp_aem_control, 0, &ctrl_state);
-	//Check if the update is necessary
+	for (desc_id = 0; desc_id < MAX_ID_DESC; desc_id++) {
+		desc = server_find_descriptor(aecp->server, AVB_AEM_DESC_CONTROL, desc_id);
+		if (desc == NULL) {
+			break;
+		}
 
-	has_expired = ctrl_state.base_desc.base_info.expire_timeout < now;
-	if (!ctrl_state.base_desc.base_info.needs_update && !has_expired) {
-		return 0;
+		ctrl_state = (struct aecp_aem_control_state *) desc->ptr;
+
+		has_expired = ctrl_state->base.base_info.expire_timeout < now;
+		if (!has_expired) {
+			continue;
+		}
+
+		rc = handle_unsol_control_common(aecp, desc, true);
+		if (rc) {
+			return rc;
+		}
+
+		ctrl_state->base.base_info.needs_update = false;
+		if (has_expired) {
+			ctrl_state->base.base_info.expire_timeout = LONG_MAX;
+		}
 	}
 
-	ctrl_state.base_desc.base_info.needs_update = false;
-	if (has_expired) {
-		ctrl_state.base_desc.base_info.expire_timeout = LONG_MAX;
-	}
-
-	if (rc) {
-		spa_assert(0);
-	}
-
-	desc = (struct descriptor *) ctrl_state.base_desc.desc;
- 	/* Only support Milan so far */
-	control = (struct avb_packet_aecp_aem_setget_control *) p->payload;
-
-	control->descriptor_id = htons(desc->index);
-	control->descriptor_type = htons(desc->type);
-	p->aecp.target_guid = htobe64(target_id);
-	ctrl_desc = (struct avb_aem_desc_control *) desc->ptr;
-	desc_formats = (struct avb_aem_desc_value_format *) ctrl_desc->value_format;
-
-	/** Only support identify so far */
-	value = (uint8_t*)control->payload;
-	value_desc = desc_formats->current_value;
-	*value = value_desc;
-
-	AVB_PACKET_AEM_SET_COMMAND_TYPE(p, AVB_AECP_AEM_CMD_SET_CONTROL);
-	rc = reply_unsolicited_notifications(aecp, &ctrl_state.base_desc.base_info,
-				buf, len, has_expired);
-	if (rc) {
-		pw_log_error("Unsolicited notification failed \n");
-	}
-	rc = aecp_aem_refresh_state_var(aecp, target_id,
-			aecp_aem_control, 0, &ctrl_state);
-	return rc;
+	return 0;
 }

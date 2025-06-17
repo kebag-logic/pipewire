@@ -33,7 +33,6 @@ int handle_cmd_entity_available(struct aecp *aecp, int64_t now, const void *m, i
 	struct descriptor *desc;
 	struct aecp_aem_entity_state *entity_state;
 	struct aecp_aem_lock_state *lock;
-	int rc;
 
 #ifndef USE_MILAN
 // TODO get the acquire state
@@ -65,11 +64,6 @@ int handle_cmd_entity_available(struct aecp *aecp, int64_t now, const void *m, i
 	} else if (lock->is_locked) {
 		avail_reply->lock_controller_guid = htobe64(lock->locked_id);
 		avail_reply->flags = htonl(AECP_AEM_AVAIL_ENTITY_LOCKED);
-	}
-
-	if (rc) {
-		pw_log_error("Issue while getting lock\n");
-		spa_assert(0);
 	}
 
 	AVB_PACKET_AECP_SET_MESSAGE_TYPE(&p_reply->aecp,

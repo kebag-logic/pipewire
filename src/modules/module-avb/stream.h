@@ -17,6 +17,8 @@
 
 #include <pipewire/pipewire.h>
 
+#include "acmp-stream-attributes.h"
+
 #define BUFFER_SIZE	(1u<<16)
 #define BUFFER_MASK	(BUFFER_SIZE-1)
 
@@ -40,7 +42,6 @@ struct stream {
 
 	uint16_t direction;
 	uint16_t index;
-	const struct descriptor *desc;
 	uint64_t id;
 	uint64_t peer_id;
 
@@ -98,7 +99,7 @@ struct stream {
 #include "mvrp.h"
 #include "maap.h"
 
-struct stream *server_create_stream(struct server *server, struct stream *stream
+struct stream *server_create_stream(struct server *server, struct stream *stream,
         enum spa_direction direction, uint16_t index);
 
 void stream_destroy(struct stream *stream);

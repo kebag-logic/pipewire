@@ -17,27 +17,25 @@ int handle_cmd_register_unsol_notifications(struct aecp *aecp, int64_t now,
 {
 	const struct avb_ethernet_header *h = m;
 	const struct avb_packet_aecp_aem *p = SPA_PTROFF(h, sizeof(*h), void);
-	struct aecp_aem_unsol_notification_state unsol = {0};
-
+	struct descriptor *desc;
+	struct aecp_aem_entity_state *entity_state;
+	struct aecp_aem_unsol_notification_state *unsol;
 	uint64_t controller_id = htobe64(p->aecp.controller_guid);
-	uint64_t target_id = htobe64(p->aecp.target_guid);
 	uint16_t index;
-	int rc;
+
+	desc = server_find_descriptor(aecp->server, AVB_AEM_DESC_ENTITY, 0);
+	if (desc == NULL)
+		return reply_status(aecp, AVB_AECP_AEM_STATUS_NO_SUCH_DESCRIPTOR, p, len);
+
+	entity_state = (struct aecp_aem_entity_state*) desc->ptr;
+	unsol = entity_state->unsol_notif_state;
 
 #ifdef USE_MILAN
 	for (index = 0; index < AECP_AEM_UNSOL_NOTIFICATION_REG_CONTROLLER_MAX;
 				index++)  {
 
-		rc = aecp_aem_get_state_var(aecp, target_id, aecp_aem_unsol_notif,
-			index, &unsol);
-
-		if (rc) {
-			pw_log_error("could not get the unsolicited notification\n");
-			spa_assert(0);
-		}
-
-		if ((unsol.ctrler_endity_id == controller_id) &&
-				unsol.is_registered) {
+		if ((unsol->ctrler_endity_id == controller_id) &&
+				unsol->is_registered) {
 			pw_log_warn("controller 0x%lx, already registered\n", controller_id);
 			return reply_success(aecp, m, len);
 		}
@@ -46,15 +44,7 @@ int handle_cmd_register_unsol_notifications(struct aecp *aecp, int64_t now,
 	for (index = 0; index < AECP_AEM_UNSOL_NOTIFICATION_REG_CONTROLLER_MAX;
 				index++)  {
 
-		rc = aecp_aem_get_state_var(aecp, target_id, aecp_aem_unsol_notif,
-			index, &unsol);
-
-		if (rc) {
-			pw_log_error("could not get the unsolicited notification\n");
-			spa_assert(0);
-		}
-
-		if (!unsol.is_registered) {
+		if (!unsol->is_registered) {
 			break;
 		}
 	}
@@ -63,20 +53,13 @@ int handle_cmd_register_unsol_notifications(struct aecp *aecp, int64_t now,
 		return reply_no_resources(aecp, m, len);
 	}
 
-	unsol.ctrler_endity_id = controller_id;
-	memcpy(unsol.ctrler_mac_addr, h->src, sizeof(h->src));
-	unsol.is_registered = true;
-	unsol.port_id = 0;
-	unsol.next_seq_id = 0;
+	unsol->ctrler_endity_id = controller_id;
+	memcpy(unsol->ctrler_mac_addr, h->src, sizeof(h->src));
+	unsol->is_registered = true;
+	unsol->port_id = 0;
+	unsol->next_seq_id = 0;
 
 	pw_log_info("Unsolicited notification registration for 0x%lx", controller_id);
-	rc = aecp_aem_set_state_var(aecp, target_id, controller_id, aecp_aem_unsol_notif,
-		index, &unsol);
-
-	if (rc) {
-		pw_log_error("setting the aecp_aecp_unsol_notif\n");
-		spa_assert(0);
-	}
 
 	return reply_success(aecp, m, len);
 #else
@@ -89,12 +72,19 @@ int handle_cmd_deregister_unsol_notifications(struct aecp *aecp,
 {
 	const struct avb_ethernet_header *h = m;
 	const struct avb_packet_aecp_aem *p = SPA_PTROFF(h, sizeof(*h), void);
-	struct aecp_aem_unsol_notification_state unsol = {0};
+	struct descriptor *desc;
+	struct aecp_aem_entity_state *entity_state;
+	struct aecp_aem_unsol_notification_state *unsol;
 
 	uint64_t controller_id = htobe64(p->aecp.controller_guid);
-	uint64_t target_id = htobe64(p->aecp.target_guid);
 	uint16_t index;
-	int rc;
+
+	desc = server_find_descriptor(aecp->server, AVB_AEM_DESC_ENTITY, 0);
+	if (desc == NULL)
+		return reply_status(aecp, AVB_AECP_AEM_STATUS_NO_SUCH_DESCRIPTOR, p, len);
+
+	entity_state = (struct aecp_aem_entity_state*) desc->ptr;
+	unsol = entity_state->unsol_notif_state;
 
 
 	#ifdef USE_MILAN
@@ -102,16 +92,8 @@ int handle_cmd_deregister_unsol_notifications(struct aecp *aecp,
 	for (index = 0; index < AECP_AEM_UNSOL_NOTIFICATION_REG_CONTROLLER_MAX;
 				index++)  {
 
-		rc = aecp_aem_get_state_var(aecp, target_id, aecp_aem_unsol_notif,
-			index, &unsol);
-
-		if (rc) {
-			pw_log_error("could not get the unsolicited notification\n");
-			spa_assert(0);
-		}
-
-		if ((unsol.ctrler_endity_id == controller_id) &&
-				unsol.is_registered) {
+		if ((unsol->ctrler_endity_id == controller_id) &&
+				unsol->is_registered) {
 			break;
 		}
 	}
@@ -123,21 +105,13 @@ int handle_cmd_deregister_unsol_notifications(struct aecp *aecp,
 		return reply_success(aecp, m, len);
 	}
 
-
-	unsol.ctrler_endity_id = 0;
-	memset(unsol.ctrler_mac_addr, 0, sizeof(unsol.ctrler_mac_addr));
-	unsol.is_registered = false;
-	unsol.port_id = 0;
-	unsol.next_seq_id = 0;
+	unsol->ctrler_endity_id = 0;
+	memset(unsol->ctrler_mac_addr, 0, sizeof(unsol->ctrler_mac_addr));
+	unsol->is_registered = false;
+	unsol->port_id = 0;
+	unsol->next_seq_id = 0;
 
 	pw_log_info("unsol de-registration for 0x%lx at idx=%d", controller_id, index);
-	rc = aecp_aem_set_state_var(aecp, target_id, controller_id, aecp_aem_unsol_notif,
-		index, &unsol);
-
-	if (rc) {
-		pw_log_error("setting the aecp_aecp_unsol_notif\n");
-		spa_assert(0);
-	}
 
 	return reply_success(aecp, m, len);
 #else

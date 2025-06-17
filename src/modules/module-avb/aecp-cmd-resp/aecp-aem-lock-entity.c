@@ -14,6 +14,63 @@
 #include "aecp-aem-helpers.h"
 #include "aecp-aem-unsol-helper.h"
 
+static int handle_unsol_lock_common(struct aecp *aecp,
+	struct aecp_aem_lock_state *lock, bool internal)
+{
+	uint8_t buf[512];
+	void *m = buf;
+	// struct aecp_aem_regis_unsols
+	struct avb_ethernet_header *h = m;
+	struct avb_packet_aecp_aem *p = SPA_PTROFF(h, sizeof(*h), void);
+	struct avb_packet_aecp_aem_lock *ae;
+	size_t len = sizeof(*h) + sizeof(*p) + sizeof(*ae);
+	int rc;
+
+	// Freshen up the buffer
+	memset(buf, 0, sizeof(buf));
+	ae = (struct avb_packet_aecp_aem_lock*)p->payload;
+
+	if (!lock->is_locked) {
+		ae->locked_guid = 0;
+		ae->flags = htonl(AECP_AEM_LOCK_ENTITY_FLAG_UNLOCK);
+		lock->is_locked = false;
+		lock->base_info.expire_timeout = LONG_MAX;
+	} else {
+		ae->locked_guid = htobe64(lock->locked_id);
+		ae->flags = 0;
+	}
+
+	AVB_PACKET_AEM_SET_COMMAND_TYPE(p, AVB_AECP_AEM_CMD_LOCK_ENTITY);
+
+	/** Setup the packet for the unsolicited notification*/
+	rc = reply_unsolicited_notifications(aecp, &lock->base_info, buf, len, internal);
+	if (rc) {
+		pw_log_error("Unsolicited notification failed \n");
+	}
+
+	return rc;
+}
+
+static int handle_unsol_lock_entity(struct aecp *aecp, struct descriptor *desc,
+	 uint64_t ctrler_id)
+{
+	int rc = -1;
+	struct aecp_aem_entity_state *entity_state;
+	struct aecp_aem_lock_state *lock;
+
+#ifdef USE_MILAN
+	pw_log_debug("Handling unsolicited notification for the lock command\n");
+
+	entity_state = desc->ptr;
+	lock = &entity_state->lock_state;
+	lock->base_info.controller_entity_id = ctrler_id;
+
+	rc = handle_unsol_lock_common(aecp, lock, false);
+#endif
+
+	return rc;
+}
+
 /* LOCK_ENTITY */
 /* Milan v1.2, Sec. 5.4.2.2; IEEE 1722.1-2021, Sec. 7.4.2*/
 int handle_cmd_lock_entity(struct aecp *aecp, int64_t now, const void *m, int len)
@@ -31,7 +88,7 @@ int handle_cmd_lock_entity(struct aecp *aecp, int64_t now, const void *m, int le
 	struct aecp_aem_entity_state *entity_state;
 	struct aecp_aem_lock_state  *lock;
 	uint16_t desc_type, desc_id;
-
+	uint64_t ctrler_id;
 	int rc;
 	bool changed = false;
 	uint8_t buf[512];
@@ -39,13 +96,14 @@ int handle_cmd_lock_entity(struct aecp *aecp, int64_t now, const void *m, int le
 	ae = (const struct avb_packet_aecp_aem_lock*)p->payload;
 	desc_type = ntohs(ae->descriptor_type);
 	desc_id = ntohs(ae->descriptor_id);
+	ctrler_id = htobe64(p->aecp.controller_guid) ;
 
 	desc = server_find_descriptor(server, desc_type, desc_id);
 	if (desc == NULL)
 		return reply_status(aecp, AVB_AECP_AEM_STATUS_NO_SUCH_DESCRIPTOR, p, len);
 
 	entity_state = desc->ptr;
-	lock = entity_state->lock_state;
+	lock = &entity_state->lock_state;
 
 	if (desc_type != AVB_AEM_DESC_ENTITY || desc_id != 0)
 	#ifdef USE_MILAN
@@ -69,17 +127,17 @@ int handle_cmd_lock_entity(struct aecp *aecp, int64_t now, const void *m, int le
 		}
 
 		/* Unlocking by the controller which locked */
-		pw_log_debug("un-locking the entity %lx\n", htobe64(p->aecp.controller_guid));
-		if (htobe64(p->aecp.controller_guid) == lock->locked_id) {
+		pw_log_debug("un-locking the entity %lx\n", ctrler_id);
+		if (ctrler_id == lock->locked_id) {
 			pw_log_debug("unlocking\n");
 			lock->is_locked = false;
 			lock->locked_id = 0;
 			changed = true;
 		} else {
 			/* Unlocking by a controller that did not lock?*/
-			if (htobe64(p->aecp.controller_guid) != lock->locked_id) {
-				pw_log_debug("but the device is locked by %lx\n", lock->locked_id));
-				return reply_locked(aecp, m, len);
+			if (ctrler_id != lock->locked_id) {
+				pw_log_debug("but the device is locked by %lx\n", lock->locked_id);
+				return reply_locked_desc(aecp, desc, m, len);
 			// TODO: Can this statement be reached?
 			} else {
 				pw_log_error("Invalid state\n");
@@ -95,11 +153,11 @@ int handle_cmd_lock_entity(struct aecp *aecp, int64_t now, const void *m, int le
 			lock->base_info.expire_timeout = now +
 					AECP_AEM_LOCK_ENTITY_EXPIRE_TIMEOUT_SECOND * SPA_NSEC_PER_SEC;
 			lock->is_locked = true;
-			lock->locked_id = htobe64(p->aecp.controller_guid);
+			lock->locked_id = ctrler_id;
 			changed = true;
 		} else {
 			// If the lock is taken again by device
-			if (htobe64(p->aecp.controller_guid) == lock->locked_id) {
+			if (ctrler_id == lock->locked_id) {
 					lock->base_info.expire_timeout += AECP_AEM_LOCK_ENTITY_EXPIRE_TIMEOUT_SECOND;
 					lock->is_locked = true;
 					// TODO: Add changed to trigger the response
@@ -107,12 +165,12 @@ int handle_cmd_lock_entity(struct aecp *aecp, int64_t now, const void *m, int le
 			} else {
 				// Cannot lock because already locked
 				pw_log_debug("but the device is locked by %lx\n", lock->locked_id);
-				return reply_locked(aecp, m, len);
+				return reply_locked(aecp, desc, len);
 			}
 		}
 	}
 
-	lock->base_info.controller_entity_id = htobe64(p->aecp.controller_guid);
+	lock->base_info.controller_entity_id = ctrler_id;
 	/* Forge the response for the entity that is locking the device */
 	memcpy(buf, m, len);
 	h_reply = (struct avb_ethernet_header *) buf;
@@ -125,102 +183,36 @@ int handle_cmd_lock_entity(struct aecp *aecp, int64_t now, const void *m, int le
 
 	AVB_PACKET_AECP_SET_STATUS(&p_reply->aecp, AVB_AECP_AEM_STATUS_SUCCESS);
 
-	if (changed) {
-		if (aecp_aem_set_state_var(aecp, htobe64(p->aecp.target_guid),
-				htobe64(p->aecp.controller_guid),aecp_aem_lock, desc_id, &lock)) {
-			spa_assert(0);
-		}
-	}
-	return avb_server_send_packet(server, h->src, AVB_TSN_ETH, buf, len);
-}
-
-static int handle_unsol_lock_common(struct aecp *aecp, int64_t now,
-	struct aecp_aem_lock_state *lock, bool internal)
-{
-	uint8_t buf[512];
-	// Freshen up the buffer
-	memset(buf, 0, sizeof(buf));
-	ae = (struct avb_packet_aecp_aem_lock*)p->payload;
-
-	if (!lock->is_locked) {
-		ae->locked_guid = 0;
-		ae->flags = htonl(AECP_AEM_LOCK_ENTITY_FLAG_UNLOCK);
-		lock->is_locked = false;
-		lock->base_info.expire_timeout = LONG_MAX;
-	} else {
-		ae->locked_guid = htobe64(lock->locked_id);
-		ae->flags = 0;
-	}
-
-	AVB_PACKET_AEM_SET_COMMAND_TYPE(p, AVB_AECP_AEM_CMD_LOCK_ENTITY);
-	/** Setup the packet for the unsolicited notification*/
-	rc = reply_unsolicited_notifications(aecp, &lock->base_info, buf, len, internal);
+	rc = avb_server_send_packet(server, h->src, AVB_TSN_ETH, buf, len);
 	if (rc) {
-		pw_log_error("Unsolicited notification failed \n");
+		pw_log_error("Reply failed for lock entity\n");
+		return rc;
 	}
 
-	return rc;
-
-}
-
-int handle_unsol_lock_entity(struct aecp *aecp, int64_t now, uint64_t ctrler_id)
-{
-	bool has_expired;
-	int rc;
-	void *m = buf;
-
-	// struct aecp_aem_regis_unsols
-	struct avb_ethernet_header *h = m;
-	struct avb_packet_aecp_aem *p = SPA_PTROFF(h, sizeof(*h), void);
-	struct avb_packet_aecp_aem_lock *ae;
-	size_t len = sizeof(*h) + sizeof(*p) + sizeof(*ae);
-	uint64_t target_id = aecp->server->entity_id;
-
-	struct descriptor *desc;
-	struct aecp_aem_entity_state *entity_state;
-	struct aecp_aem_lock_state *lock;
-
-#ifdef USE_MILAN
-	pw_log_debug("Handling unsolicited notification for the lock command\n");
-	desc = server_find_descriptor(server, AVB_AEM_DESC_ENTITY, 0);
-	if (desc == NULL) {
-		pw_log_error("Unsolicited must have a descriptor\n");
-		spa_assert(0);
+	if (changed) {
+		return handle_unsol_lock_entity(aecp, desc, ctrler_id);
 	}
-
-	entity_state = desc->ptr;
-	lock = entity_state->lock_state;
-	lock->base_info.controller_entity_id = ctrler_id;
-
-	rc = handle_unsol_lock_common(aecp, now, lock, false);
-#endif
 
 	return rc;
 }
 
 int handle_unsol_lock_entity_timeout(struct aecp *aecp, int64_t now)
 {
-	uint8_t buf[512];
-	bool has_expired;
-	int rc;
-	void *m = buf;
-	// struct aecp_aem_regis_unsols
-	struct avb_ethernet_header *h = m;
-	struct avb_packet_aecp_aem *p = SPA_PTROFF(h, sizeof(*h), void);
-	struct avb_packet_aecp_aem_lock *ae;
-	size_t len = sizeof (*h) + sizeof(*p) + sizeof(*ae);
-	uint64_t target_id = aecp->server->entity_id;
-
 	struct descriptor *desc;
 	struct aecp_aem_entity_state *entity_state;
 	struct aecp_aem_lock_state  *lock;
+	bool has_expired;
+	int rc;
 
 #ifdef USE_MILAN
-	desc = server_find_descriptor(server, AVB_AEM_DESC_ENTITY, 0);
+	desc = server_find_descriptor(aecp->server, AVB_AEM_DESC_ENTITY, 0);
 	if (desc == NULL) {
 		pw_log_error("Unsolicited must have a descriptor\n");
 		spa_assert(0);
 	}
+
+	entity_state = desc->ptr;
+	lock = &entity_state->lock_state;
 
 	has_expired = (now > lock->base_info.expire_timeout);
 	if (!has_expired) {
@@ -229,10 +221,7 @@ int handle_unsol_lock_entity_timeout(struct aecp *aecp, int64_t now)
 		return 0;
 	}
 
-	entity_state = desc->ptr;
-	lock = entity_state->lock_state;
-
-	rc = handle_unsol_lock_common(aecp, now, lock, true);
+	rc = handle_unsol_lock_common(aecp, lock, true);
 #endif
 
 	return rc;

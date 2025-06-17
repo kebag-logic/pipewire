@@ -12,6 +12,36 @@
 #include "aecp-aem-configuration.h"
 #include "aecp-aem-unsol-helper.h"
 
+
+static int handle_unsol_set_configuration(struct aecp *aecp, struct descriptor *desc,
+	uint64_t ctrler_id)
+{
+	/* Reply */
+	uint8_t buf[512];
+	void *m = buf;
+	struct avb_aem_desc_entity *entity_desc;
+	struct avb_ethernet_header *h = m;
+	struct avb_packet_aecp_aem *p = SPA_PTROFF(h, sizeof(*h), void);
+	struct avb_packet_aecp_aem_setget_configuration *cfg;
+	size_t len = sizeof (*h) + sizeof(*p) + sizeof(*cfg);
+	int rc;
+
+	memset(buf, 0, sizeof(buf));
+	entity_desc = (struct avb_aem_desc_entity*) desc->ptr;
+	cfg = (struct avb_packet_aecp_aem_setget_configuration *) p->payload;
+	cfg->configuration_index = htons(entity_desc->current_configuration);
+	p->aecp.target_guid = htobe64(aecp->server->entity_id);
+
+	AVB_PACKET_AEM_SET_COMMAND_TYPE(p, AVB_AECP_AEM_CMD_SET_CONFIGURATION);
+	rc = reply_unsolicited_notifications_ctrler_id(aecp, ctrler_id, buf, len,
+			false);
+	if (rc) {
+		pw_log_error("Unsolicited notification failed \n");
+	}
+
+	return rc;
+}
+
 /* IEEE 1722.1-2021, Sec. 7.4.7*/
 int handle_cmd_set_configuration(struct aecp *aecp, int64_t now, const void *m, int len)
 {
@@ -24,10 +54,10 @@ int handle_cmd_set_configuration(struct aecp *aecp, int64_t now, const void *m, 
 	struct avb_packet_aecp_aem_setget_configuration *cfg;
 
 	/* Information about the current entity */
-	struct aecp_aem_configuration_state cfg_state = {0};
 	struct avb_aem_desc_entity *entity_desc;
 	uint16_t req_cfg_id, cur_cfg_id, cfg_count;
 	struct descriptor *desc;
+	int rc;
 	bool has_failed;
 	uint8_t buf[2048];
 
@@ -58,13 +88,6 @@ int handle_cmd_set_configuration(struct aecp *aecp, int64_t now, const void *m, 
 	req_cfg_id = ntohs(cfg->configuration_index);
 	cfg_count = ntohs(entity_desc->configurations_count);
 
-	// FIXME: refactoring: remove the cfg_state, the value is already in the
-	// in the descriptor anyway
-	if (aecp_aem_get_state_var(aecp, htobe64(p->aecp.target_guid),
-									aecp_aem_configuration, 0, &cfg_state)) {
-		return reply_not_supported(aecp, m, len);
-	}
-
 	if (entity_desc->entity_id != p->aecp.target_guid) {
 		pw_log_error("invalid entity id\n");
 		has_failed = true;
@@ -88,62 +111,23 @@ int handle_cmd_set_configuration(struct aecp *aecp, int64_t now, const void *m, 
 	*/
 	if (has_failed) {
 		cfg->configuration_index = entity_desc->current_configuration;
-	} else {
-		cfg_state.cfg_idx = ntohs(entity_desc->current_configuration);
-
-		// Unsolicited preparation
-		aecp_aem_set_state_var(aecp, aecp->server->entity_id,
-				htobe64(p->aecp.controller_guid), aecp_aem_configuration, 0,
-				&cfg_state);
 	}
-    return reply_success(aecp, buf, len);
+
+    rc = reply_success(aecp, buf, len);
+	if (rc) {
+		pw_log_error("Reply Failed for set_configuration\n");
+		return rc;
+	}
+
+	if(!has_failed) {
+		return handle_unsol_set_configuration(aecp, desc,
+											htobe64(p->aecp.controller_guid));
+	}
+
+	return 0;
 #else
 	return reply_not_implemented(aecp, m, len);
 #endif // USE_MILAN
-}
-
-int handle_unsol_set_configuration(struct aecp *aecp, int64_t now, uint64_t ctrler_id)
-{
-	struct aecp_aem_configuration_state cfg_state = {0};
-	/* Reply */
-	uint8_t buf[512];
-	void *m = buf;
-	struct avb_ethernet_header *h = m;
-	struct avb_packet_aecp_aem *p = SPA_PTROFF(h, sizeof(*h), void);
-	struct avb_packet_aecp_aem_setget_configuration *cfg;
-	uint64_t target_id = aecp->server->entity_id;
-	size_t len = sizeof (*h) + sizeof(*p) + sizeof(*cfg);
-	int rc;
-
-	if (aecp_aem_get_state_var(aecp, target_id, aecp_aem_configuration, 0,
-			 &cfg_state)) {
-
-		pw_log_error("Could not retrieve state var for aem_configuration \n");
-		return -1;
-	}
-
-	//Check if the udat eis necessary
-	if (!cfg_state.base_info.needs_update) {
-		return 0;
-	}
-	// Then make sure that it does not happen again.
-	cfg_state.base_info.needs_update = false;
-
-	memset(buf, 0, sizeof(buf));
-	aecp_aem_refresh_state_var(aecp, aecp->server->entity_id,
-		aecp_aem_configuration, 0, &cfg_state);
-
-	cfg = (struct avb_packet_aecp_aem_setget_configuration *) p->payload;
-	cfg->configuration_index = htons(cfg_state.cfg_idx);
-	p->aecp.target_guid = htobe64(aecp->server->entity_id);
-
-	AVB_PACKET_AEM_SET_COMMAND_TYPE(p, AVB_AECP_AEM_CMD_SET_CONFIGURATION);
-	rc = reply_unsolicited_notifications(aecp, &cfg_state.base_info, buf, len,
-			false);
-	if (rc) {
-		pw_log_error("Unsolicited notification failed \n");
-	}
-	return rc;
 }
 
 /* IEEE 1722.1-2021, Sec. 7.4.8*/

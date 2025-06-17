@@ -70,5 +70,9 @@ static inline void unaligned_copy_u32(void *dest, uint32_t src) {
 }
 
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof(x[0]))
+#define PRAGMA_STRINGIFY(x) #x
+#define PRAGMA_MACRO(x) PRAGMA_STRINGIFY(x)
+#define WARNING(text) _Pragma(PRAGMA_MACRO(message(text)))
+
 
 #endif /* AVB_UTILS_H */

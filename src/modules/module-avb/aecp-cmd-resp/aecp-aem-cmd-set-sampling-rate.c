@@ -26,6 +26,40 @@ static int reply_failed_set_sampling_rate(struct aecp *aecp, const void *m,
     return reply_success(aecp, buf, len);
 }
 
+static int handle_unsol_sampling_rate(struct aecp *aecp, struct descriptor *desc,
+                                uint64_t ctrler_id)
+{
+    uint8_t buf[AVB_PACKET_MIN_SIZE];
+	struct avb_ethernet_header *h;
+	struct avb_packet_aecp_aem *p;
+	struct avb_packet_aecp_aem_setget_sampling_rate *sg_sr;
+    struct avb_aem_desc_audio_unit *au;
+    size_t len;
+    int rc;
+
+    memset(buf, 0, sizeof(buf));
+    aecp_aem_prepare_pointers(buf, &h, &p, &sg_sr);
+    au = (struct avb_aem_desc_audio_unit*) desc->ptr;
+
+    /** Send the current sampling rate will be sent */
+    sg_sr->sampling_rate = (au->current_sampling_rate);
+    sg_sr->descriptor_id = htons(desc->index);
+    sg_sr->descriptor_type = htons(desc->type);
+
+    AVB_PACKET_AEM_SET_COMMAND_TYPE(p, AVB_AECP_AEM_CMD_SET_SAMPLING_RATE);
+    len = sizeof(*h) + sizeof(*p) + sizeof(*sg_sr);
+
+    rc = reply_unsolicited_notifications_ctrler_id(aecp, ctrler_id,  buf, len,
+         false);
+
+    if (rc) {
+        pw_log_error("Unsol Notif failed in ");
+        spa_assert(0);
+    }
+
+    return rc;
+}
+
  /* IEEE 1722.1-2021, Sec. 7.4.21. SET_SAMPLING_RATE Command */
 int handle_cmd_set_sampling_rate(struct aecp *aecp, int64_t now, const void *m, int len)
 {
@@ -33,7 +67,6 @@ int handle_cmd_set_sampling_rate(struct aecp *aecp, int64_t now, const void *m, 
     const struct avb_ethernet_header *h;
     const struct avb_packet_aecp_aem *p;
     struct avb_packet_aecp_aem_setget_sampling_rate *sg_sr;
-    struct aecp_aem_sampling_rate_state sr_state = {0};
     struct descriptor *desc;
 
     struct avb_aem_desc_audio_unit *au;
@@ -49,77 +82,26 @@ int handle_cmd_set_sampling_rate(struct aecp *aecp, int64_t now, const void *m, 
     desc_index = ntohs(sg_sr->descriptor_id);
     sampling_rate = (sg_sr->sampling_rate);
     ctrler_id = htobe64(p->aecp.controller_guid);
+
 	desc = server_find_descriptor(server, desc_type, desc_index);
 	if (desc == NULL)
 		return reply_status(aecp, AVB_AECP_AEM_STATUS_NO_SUCH_DESCRIPTOR, m, len);
-
-    rc = aecp_aem_get_state_var(aecp, aecp->server->entity_id,
-        aecp_aem_sampling_rate, 0, &sr_state);
-    if(rc) {
-        spa_assert(0);
-    }
 
     au = (struct avb_aem_desc_audio_unit*) desc->ptr;
     for (size_t sr_index = 0; sr_index < au->sampling_rates_count; sr_index++)
     {
         if (au->sampling_rates[sr_index].pull_frequency == sampling_rate) {
             au->current_sampling_rate = sampling_rate;
-            sr_state.base_desc.desc = desc;
-            /** Request the unsolicited notification here */
-            rc = aecp_aem_set_state_var(aecp, aecp->server->entity_id, ctrler_id,
-                aecp_aem_sampling_rate, 0, &sr_state);
-            if(rc) {
-                spa_assert(0);
+
+            rc = reply_success(aecp, m, len);
+            if (rc) {
+                pw_log_error("Reply Success failed from set_sampling_rate\n");
+                return -1;
             }
 
-            return reply_success(aecp, m, len);
+            return handle_unsol_sampling_rate(aecp, desc, ctrler_id);
         }
     }
+
     return reply_failed_set_sampling_rate(aecp, m, len, au);
-}
-
-int handle_unsol_sampling_rate(struct aecp *aecp, int64_t now)
-{
-    uint8_t buf[AVB_PACKET_MIN_SIZE];
-	struct avb_ethernet_header *h;
-	struct avb_packet_aecp_aem *p;
-	struct avb_packet_aecp_aem_setget_sampling_rate *sg_sr;
-    struct aecp_aem_sampling_rate_state sr_state;
-    struct avb_aem_desc_audio_unit *au;
-    struct descriptor *desc;
-    uint64_t target_id;
-    size_t len;
-    int rc;
-
-    rc = aecp_aem_get_state_var(aecp, aecp->server->entity_id,
-             aecp_aem_sampling_rate, 0, &sr_state);
-    if (rc) {
-        spa_assert(rc);
-    }
-
-    if (!sr_state.base_desc.base_info.needs_update) {
-        return 0;
-    }
-
-    sr_state.base_desc.base_info.needs_update = false;
-    target_id = aecp->server->entity_id;
-    memset(buf, 0, sizeof(buf));
-    aecp_aem_prepare_pointers(buf, &h, &p, &sg_sr);
-    desc = sr_state.base_desc.desc;
-    au = (struct avb_aem_desc_audio_unit*) desc->ptr;
-    /** Send the current sampling rate will be sent */
-    sg_sr->sampling_rate = (au->current_sampling_rate);
-    sg_sr->descriptor_id = htons(desc->index);
-    sg_sr->descriptor_type = htons(desc->type);
-
-    AVB_PACKET_AEM_SET_COMMAND_TYPE(p, AVB_AECP_AEM_CMD_SET_SAMPLING_RATE);
-    len = sizeof(*h) + sizeof(*p) + sizeof(*sg_sr);
-
-    rc = reply_unsolicited_notifications(aecp, &sr_state.base_desc.base_info,
-        buf, len, false);
-    if (rc)
-        spa_assert(0);
-
-    return aecp_aem_refresh_state_var(aecp, target_id, aecp_aem_sampling_rate, 0,
-        &sr_state);
 }

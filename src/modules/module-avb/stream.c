@@ -285,11 +285,9 @@ static const struct pw_stream_events sink_stream_events = {
 };
 
 
-struct stream *server_create_stream(struct server *server, struct stream *stream
+struct stream *server_create_stream(struct server *server, struct stream *stream,
 		enum spa_direction direction, uint16_t index)
 {
-	struct stream *stream;
-	const struct descriptor *desc;
 	uint32_t n_params;
 	const struct spa_pod *params[1];
 	uint8_t buffer[1024];
@@ -299,7 +297,6 @@ struct stream *server_create_stream(struct server *server, struct stream *stream
 	stream->server = server;
 	stream->direction = direction;
 	stream->index = index;
-	stream->desc = desc;
 	spa_list_append(&server->streams, &stream->link);
 
 	stream->prio = AVB_MSRP_PRIORITY_DEFAULT;

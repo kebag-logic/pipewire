@@ -14,8 +14,8 @@
 #include "acmp.h"
 #include "msrp.h"
 #include "internal.h"
-#include "stream.h"
 #include "aecp-aem.h"
+#include "stream.h"
 
 static const uint8_t mac[6] = AVB_BROADCAST_MAC;
 
@@ -53,45 +53,6 @@ struct acmp {
 
 };
 
-struct fsm_state_talker {
-    struct spa_list link;
-
-    uint64_t stream_id;
-    enum milan_acmp_talker_sta current_state;
-    int64_t timeout;
-};
-
-struct fsm_binding_parameters {
-    uint32_t status;
-    uint64_t controller_entity_id;
-    uint64_t talker_entity_id;
-    uint64_t listener_entity_id;
-
-    uint16_t talker_unique_id;
-    uint16_t listener_unique_id;
-
-    uint16_t sequence_id;
-
-    uint64_t stream_id;
-    char stream_dest_mac[6];
-    uint8_t stream_vlan_id;
-};
-
-struct fsm_state_listener {
-    struct spa_list link;
-
-    struct fsm_binding_parameters binding_parameters;
-
-    enum milan_acmp_listener_sta current_state;
-    int64_t timeout;
-    uint16_t flags;
-    uint8_t probing_status;
-    uint16_t connection_count;
-    uint8_t STREAMING_WAIT;
-
-    // FIXME: Is it necessary? remove if not
-    uint8_t buf[2048];
-};
 
 static struct fsm_state_listener *acmp_fsm_find(struct acmp *acmp, int type, uint64_t id)
 {
@@ -871,7 +832,7 @@ static const struct listener_fsm_cmd listener_settled_rsv_ok[AECP_MILAN_ACMP_EVT
 
     [AECP_MILAN_ACMP_EVT_TK_DISCOVERED]{
         .state_handler = handle_fsm_settled_rsv_ok_evt_tk_discovered_evt}, // 5.5.3.5.46
-Fr
+
     [AECP_MILAN_ACMP_EVT_TK_DEPARTED]{
         .state_handler = handle_fsm_settled_rsv_ok_evt_tk_departed_evt}, // 5.5.3.5.47
 
@@ -1086,18 +1047,11 @@ static int handle_connect_tx_response(struct acmp *acmp,
 
     // At this state there should be a state machine from the rcv_bind_rx_cmd
     if (!fsm) {
-        pw_log_info("connect_tx_resp: Creating new state machine for"
+        pw_log_error("connect_tx_resp: Creating new state machine for"
                         "listener 0x%lx", be64toh(resp->listener_guid));
-        // Allocate memory for the new FSM state
-         fsm = stream_listener_fsm_new(acmp, STREAM_LISTENER_FSM);
-         if (!fsm) {
-             pw_log_error("Failed to allocate memory for new stream listener"
-                " state");
-             return -ENOMEM;
-         }
-
-        return 0;
+        spa_assert(0);
     }
+
     pw_log_info("connect_tx_resp: Proceeding with SM for listener 0x%lx.",
          be64toh(resp->listener_guid));
 
@@ -1263,22 +1217,9 @@ static int handle_connect_rx_command(struct acmp *acmp, uint64_t now,
     int evt = AECP_MILAN_ACMP_EVT_RCV_BIND_RX_CMD;
 
     if (!fsm) {
-        pw_log_info("Creating new state machine for listener 0x%lx",
+        pw_log_error("Creating new state machine for listener 0x%lx",
                     be64toh(p->listener_guid));
-
-        // Allocate memory for the new FSM state
-         fsm = stream_listener_fsm_new(acmp, STREAM_LISTENER_FSM);
-         if (!fsm) {
-             pw_log_error("Failed to allocate memory for new stream "
-                            "listener state");
-             return -ENOMEM;
-         }
-
-         // Initialize the new FSM state
-         fsm->binding_parameters.stream_id = be64toh(p->listener_guid);
-         fsm->current_state = MILAN_ACMP_LISTENER_STA_UNBOUND;
-         fsm->timeout = LONG_MAX;
-         fsm->size = 0;
+        spa_assert(0);
     }
     pw_log_info("Proceeding with SM for listener 0x%lx.",
                     be64toh(p->listener_guid));
@@ -1351,22 +1292,9 @@ static int handle_disconnect_rx_command(struct acmp *acmp, uint64_t now,
 
     // TODO: Currently creating a new fsm. There should be one.
     if (!fsm) {
-        pw_log_info("disconnect_rx_cmd: Creating new state machine for "
+        pw_log_error("disconnect_rx_cmd: Creating new state machine for "
                     "listener 0x%lx", be64toh(p->listener_guid));
-
-        // Allocate memory for the new FSM state
-         fsm =  (acmp, STREAM_LISTENER_FSM);
-         if (!fsm) {
-             pw_log_error("Failed to allocate memory for new stream listener state");
-             return -ENOMEM;
-         }
-
-         // Initialize the new FSM state
-         fsm->binding_parameters.stream_id = be64toh(p->stream_id);
-         // TODO: This state is only valid for the demo uses case
-         fsm->current_state = MILAN_ACMP_LISTENER_STA_SETTLED_RSV_OK;
-         fsm->timeout = LONG_MAX;
-         fsm->size = 0;
+        spa_assert(0);
     }
 
     pw_log_info("Proceeding with SM for listener 0x%lx.", be64toh(p->listener_guid));
@@ -1583,17 +1511,20 @@ static const struct server_events server_events = {
     .command = acmp_command
 };
 
+
+
 static int acmp_register_stream(struct server *server, struct stream *stream,
     enum fsm_type_stream type)
 {
     struct spa_list *link;
-    struct acmp *acmp = server->acmp;
+    struct acmp *acmp = (struct acmp *)server->acmp;
     struct fsm_state_talker *acmp_fsm_talker;
     struct fsm_state_listener *acmp_fsm_listener;
 
     switch (type) {
         case FSM_STREAM_LISTENER:
-            link = &fsm->link;
+            acmp_fsm_listener = &stream->acmp_state_listener;
+            link = &acmp_fsm_listener->link;
             acmp_fsm_listener = &stream->acmp_state_listener;
 
             // The es_builder should call this when a stream  input is created
@@ -1606,13 +1537,12 @@ static int acmp_register_stream(struct server *server, struct stream *stream,
             acmp_fsm_listener->current_state = MILAN_ACMP_LISTENER_STA_UNBOUND;
             acmp_fsm_listener->timeout = LONG_MAX;
 
-
         break;
         case FSM_STREAM_TALKER:
             acmp_fsm_talker = &stream->acmp_state_talker;
 
             // The es_builder should call this when a stream  input is created
-            acmp_fsm_talker->probing_status = AVB_MILAN_ACMP_STATUS_PROBING_DISABLED;
+          //  acmp_fsm_talker->probing_status = AVB_MILAN_ACMP_STATUS_PROBING_DISABLED;
             link = &acmp_fsm_talker->link;
 
             // Initialize the new FSM state // TODO use container of.
@@ -1624,7 +1554,7 @@ static int acmp_register_stream(struct server *server, struct stream *stream,
         break;
     }
 
-    spa_list_append(&acmp->stream_fsm[type], &fsm->link);
+    spa_list_append(&acmp->stream_fsm[type], link);
 
     return 0;
 }

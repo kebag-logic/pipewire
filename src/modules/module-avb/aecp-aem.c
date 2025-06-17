@@ -161,9 +161,9 @@ struct cmd_info {
 	const bool is_readonly;
 	int (*handle_command) (struct aecp *aecp, int64_t now, const void *p,
 		 int len);
+
 	int (*handle_response) (struct aecp *aecp, int64_t now, const void *p,
 		 int len);
-	int (*handle_unsol) (struct aecp *aecp, int64_t now, uint64_t ctrler_id);
 
 	int (*handle_unsol_timer) (struct aecp *aecp, int64_t now);
 };
@@ -172,22 +172,11 @@ struct cmd_info {
 	[cmd] = { .name = name_str, .is_readonly = readonly_desc, 	 				\
 				.handle_command = handle_exec }
 
-#define AECP_AEM_HANDLE_CMD_UNSOL(cmd, readonly_desc, name_str, handle_exec,	\
-	 handle_exec_unsol) 														\
-	[cmd] = { .name = name_str, .is_readonly = readonly_desc,					\
-			  .handle_command = handle_exec, .handle_unsol = handle_exec_unsol }
 
 #define AECP_AEM_HANDLE_RESP(cmd, name_str, handle_cmd,							\
 		handle_exec_unsol)														\
 	[cmd] = { .name = name_str, .is_readonly = false,							\
 			  .handle_response = handle_cmd }
-
-/** Helper to create a handler for response and unsolicited notifications */
-#define AECP_AEM_HANDLE_RESP_UNSOL(cmd, name_str, handle_cmd,					\
-		handle_exec_unsol)														\
-	[cmd] = { .name = name_str, .is_readonly = false,							\
-			  .handle_response = handle_cmd, handle_unsol = handle_exec_unsol }
-
 
 #define AECP_AEM_CMD_RESP_AND_UNSOL(cmd, readonly_desc, name_str, handle_exec, \
 	 handle_exec_unsol) \
@@ -198,9 +187,8 @@ static const struct cmd_info cmd_info[] = {
 	AECP_AEM_HANDLE_CMD( AVB_AECP_AEM_CMD_ACQUIRE_ENTITY, false,
 						"acquire-entity", handle_acquire_entity),
 
-	AECP_AEM_HANDLE_CMD_UNSOL( AVB_AECP_AEM_CMD_LOCK_ENTITY, false,
-						"lock-entity", handle_cmd_lock_entity,
-						 handle_unsol_lock_entity),
+	AECP_AEM_HANDLE_CMD( AVB_AECP_AEM_CMD_LOCK_ENTITY, false,
+						"lock-entity", handle_cmd_lock_entity),
 
 	AECP_AEM_HANDLE_CMD( AVB_AECP_AEM_CMD_ENTITY_AVAILABLE, true,
 						"entity-available", handle_cmd_entity_available),
@@ -214,16 +202,14 @@ static const struct cmd_info cmd_info[] = {
 	AECP_AEM_HANDLE_CMD( AVB_AECP_AEM_CMD_WRITE_DESCRIPTOR, false,
 						"write-descriptor", NULL),
 
-	AECP_AEM_HANDLE_CMD_UNSOL( AVB_AECP_AEM_CMD_SET_CONFIGURATION, false,
-						"set-configuration", handle_cmd_set_configuration,
-						handle_unsol_set_configuration),
+	AECP_AEM_HANDLE_CMD( AVB_AECP_AEM_CMD_SET_CONFIGURATION, false,
+						"set-configuration", handle_cmd_set_configuration),
 
 	AECP_AEM_HANDLE_CMD( AVB_AECP_AEM_CMD_GET_CONFIGURATION, true,
 						"get-configuration", handle_cmd_get_configuration),
 
-	AECP_AEM_HANDLE_CMD_UNSOL( AVB_AECP_AEM_CMD_SET_STREAM_FORMAT, false,
-						"set-stream-format", handle_cmd_set_stream_format,
-						handle_unsol_set_stream_format),
+	AECP_AEM_HANDLE_CMD( AVB_AECP_AEM_CMD_SET_STREAM_FORMAT, false,
+						"set-stream-format", handle_cmd_set_stream_format),
 
 	AECP_AEM_HANDLE_CMD( AVB_AECP_AEM_CMD_GET_STREAM_FORMAT, true,
 						"get-stream-format", handle_get_stream_format),
@@ -246,8 +232,8 @@ static const struct cmd_info cmd_info[] = {
 	AECP_AEM_HANDLE_CMD( AVB_AECP_AEM_CMD_GET_STREAM_INFO, true,
 						"get-stream-info", handle_get_stream_info),
 
-	AECP_AEM_HANDLE_CMD_UNSOL(AVB_AECP_AEM_CMD_SET_NAME, false,
-						"set-name", handle_cmd_set_name, handle_unsol_set_name),
+	AECP_AEM_HANDLE_CMD(AVB_AECP_AEM_CMD_SET_NAME, false,
+						"set-name", handle_cmd_set_name),
 
 	AECP_AEM_HANDLE_CMD( AVB_AECP_AEM_CMD_GET_NAME, true,
 						"get-name", handle_cmd_get_name),
@@ -258,23 +244,20 @@ static const struct cmd_info cmd_info[] = {
 	AECP_AEM_HANDLE_CMD( AVB_AECP_AEM_CMD_GET_ASSOCIATION_ID, true,
 						"get-association-id", NULL),
 
-	AECP_AEM_HANDLE_CMD_UNSOL( AVB_AECP_AEM_CMD_SET_SAMPLING_RATE, false,
-						"set-sampling-rate", handle_cmd_set_sampling_rate,
-						handle_unsol_sampling_rate),
+	AECP_AEM_HANDLE_CMD( AVB_AECP_AEM_CMD_SET_SAMPLING_RATE, false,
+						"set-sampling-rate", handle_cmd_set_sampling_rate),
 
 	AECP_AEM_HANDLE_CMD( AVB_AECP_AEM_CMD_GET_SAMPLING_RATE, true,
 						"get-sampling-rate", handle_get_sampling_rate),
 
-	AECP_AEM_HANDLE_CMD_UNSOL( AVB_AECP_AEM_CMD_SET_CLOCK_SOURCE, false,
-						"set-clock-source", handle_cmd_set_clock_source,
-						handle_unsol_set_clock_source),
+	AECP_AEM_HANDLE_CMD( AVB_AECP_AEM_CMD_SET_CLOCK_SOURCE, false,
+						"set-clock-source", handle_cmd_set_clock_source),
 
 	AECP_AEM_HANDLE_CMD( AVB_AECP_AEM_CMD_GET_CLOCK_SOURCE, true,
 						"get-clock-source", handle_get_clock_source),
 
-	AECP_AEM_HANDLE_CMD_UNSOL( AVB_AECP_AEM_CMD_SET_CONTROL, false,
-						"set-control", handle_cmd_set_control,
-						handle_unsol_set_control),
+	AECP_AEM_HANDLE_CMD( AVB_AECP_AEM_CMD_SET_CONTROL, false,
+						"set-control", handle_cmd_set_control),
 
 	AECP_AEM_HANDLE_CMD( AVB_AECP_AEM_CMD_GET_CONTROL, true,
 						"get-control", handle_get_control),
@@ -358,7 +341,7 @@ static const struct cmd_info cmd_info[] = {
 
 };
 
-static inline CONTst struct cmd_info *find_cmd_info(uint16_t type, const char *name)
+static inline const struct cmd_info *find_cmd_info(uint16_t type, const char *name)
 {
 	if (type > (sizeof(cmd_info) / sizeof(cmd_info[0]))) {
 		pw_log_error("Invalid Command Type %u\n", type);
@@ -369,12 +352,14 @@ static inline CONTst struct cmd_info *find_cmd_info(uint16_t type, const char *n
 }
 
 static inline bool check_locked(struct aecp *aecp, int64_t now,
-	const struct avb_packet_aecp_aem *p, const struct cmd_info *cmd)
+	const struct avb_packet_aecp_aem *p, const struct cmd_info *cmd, size_t len)
 {
 	struct descriptor *desc;
+	struct server *server;
 	struct aecp_aem_entity_state *entity_state;
 	struct aecp_aem_lock_state *lock;
 
+	server = aecp->server;
 	desc = server_find_descriptor(server, AVB_AEM_DESC_ENTITY, 0);
 	if (desc == NULL)
 		return reply_status(aecp, AVB_AECP_AEM_STATUS_NO_SUCH_DESCRIPTOR, p, len);
@@ -405,7 +390,6 @@ int avb_aecp_aem_handle_command(struct aecp *aecp, const void *m, int len)
 	const struct cmd_info *info;
 	struct timespec ts_now;
 	int64_t now;
-	uint64_t controller_id;
 
 	/**
 	 * Time is always using the monotonic time
@@ -430,16 +414,11 @@ int avb_aecp_aem_handle_command(struct aecp *aecp, const void *m, int len)
 		return info->handle_command(aecp, now, m, len);
 	} else {
 		/** If not locked then continue below */
-		if (!check_locked(aecp, now, p, &cmd_info[cmd_type])) {
+		if (!check_locked(aecp, now, p, &cmd_info[cmd_type], len)) {
 			rc = info->handle_command(aecp, now, m, len);
 			if (rc) {
 				pw_log_error("handling returned %d\n", rc);
 				return -1;
-			}
-
-			if (info->handle_unsol) {
-				controller_id = htobe64(p->aecp.controller_guid)
-				rc = info->handle_unsol(aecp, now, controller_id);
 			}
 		} else {
 			rc = reply_locked(aecp, m, len);
@@ -453,11 +432,11 @@ int avb_aecp_aem_handle_timeouts(struct aecp *aecp, uint64_t now)
 {
 	size_t array_sz = ARRAY_SIZE(cmd_info);
 	for (size_t index = 0; index < array_sz; index++) {
-		if (!cmd_info[index].handle_unsol) {
+		if (!cmd_info[index].handle_unsol_timer) {
 			continue;
 		}
 		// FIXME use a specific hand_unsol_timeout instead of this hack (0)
-		if ((cmd_info[index].handle_unsol(aecp, now, 0))) {
+		if (cmd_info[index].handle_unsol_timer(aecp, now)) {
 			pw_log_error("unexpected failure in perdioc unsols %s\n",
 						  cmd_info[index].name);
 			spa_assert(0);

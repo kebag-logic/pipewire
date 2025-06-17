@@ -5,6 +5,7 @@
 
 #include <limits.h>
 
+#if 0
 #include "aecp-aem-state.h"
 #include "aecp-aem.h"
 #include "utils.h"
@@ -125,6 +126,26 @@ static int aecp_aem_generic_set(struct aecp* aecp,
     return 0;
 }
 
+
+int aecp_aem_get_base_info(struct aecp* aecp, uint64_t target_id,
+    enum aecp_aem_lock_types type, uint16_t id, struct aecp_aem_base_info **info)
+{
+    uint8_t *data;
+    struct aem_state_var_info *vinfo;
+    int rc = 0;
+    data = ae_state_handlers[type].var_data;
+
+    if (data == NULL) {
+        rc = -1;
+    }
+
+    data = ae_state_handlers[type].var_data;
+    vinfo = (struct aem_state_var_info*) data;
+    *info = (struct aecp_aem_base_info*) &data[id*vinfo->el_sz];
+
+    return rc;
+}
+
 void* aecp_aem_create(struct aecp* aecp, uint64_t target_id,
     enum aecp_aem_lock_types type, const struct aem_state_var_info* var)
 {
@@ -231,25 +252,6 @@ int aecp_aem_refresh_state_var(struct aecp* aecp, uint64_t target_id,
     return 0;
 }
 
-int aecp_aem_get_base_info(struct aecp* aecp, uint64_t target_id,
-    enum aecp_aem_lock_types type, uint16_t id, struct aecp_aem_base_info **info)
-{
-    uint8_t *data;
-    struct aem_state_var_info *vinfo;
-    int rc = 0;
-    data = ae_state_handlers[type].var_data;
-
-    if (data == NULL) {
-        rc = -1;
-    }
-
-    data = ae_state_handlers[type].var_data;
-    vinfo = (struct aem_state_var_info*) data;
-    *info = (struct aecp_aem_base_info*) &data[id*vinfo->el_sz];
-
-    return rc;
-}
-
 int aecp_aem_set_state_var(struct aecp* aecp, uint64_t target_id,
     uint64_t ctrler_id, enum aecp_aem_lock_types type, uint16_t id, void *state)
 {
@@ -328,3 +330,5 @@ int aecp_aem_init_var_containers(struct aecp *aecp,
 
     return 0;
 }
+
+#endif

@@ -80,11 +80,11 @@ struct server {
 	struct avb_maap *maap;
 	struct avb_adp  *adp;
 	struct avb_acmp *acmp;
+	struct avb_aecp *aecp;
 
 	struct avb_msrp_attribute *domain_attr;
 };
 
-#include "stream.h"
 
 static inline struct descriptor *server_find_descriptor(struct server *server,
 		uint16_t type, uint16_t index)
@@ -114,6 +114,8 @@ static inline void *server_add_descriptor(struct server *server,
 	spa_list_append(&server->descriptors, &d->link);
 	return d->ptr;
 }
+
+#include "stream.h"
 
 static inline struct stream *server_find_stream(struct server *server,
 		enum spa_direction direction, uint16_t index)
