@@ -107,6 +107,11 @@ struct aecp_aem_desc {
     struct aecp_aem_desc_base base_desc;
 };
 
+/** The control information to keep track of the latest changes */
+struct aecp_aem_control_state {
+    struct aecp_aem_desc_base base_desc;
+};
+
 /**
  * To keep track of which desciptor has chaanged
  */
