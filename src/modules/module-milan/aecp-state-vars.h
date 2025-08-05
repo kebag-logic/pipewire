@@ -1,0 +1,69 @@
+/* AVB support */
+/* SPDX-FileCopyrightText: Copyright © 2025 Kebag-Logic */
+/* SPDX-FileCopyrightText: Copyright © 2025 Alexandre Malki <alexandre.malki@kebag-logic.com> */
+/* SPDX-License-Identifier: MIT */
+
+#ifndef  AECP_STATE_VARS_H_
+#define  AECP_STATE_VARS_H_
+
+#include "utils.h"
+#include "aecp-aem-state.h"
+
+
+#define AECP_AEM_NEEDED_VAR(type_var, name_str, persist, expire,    \
+                             count_var, element_sz)                 \
+	[type_var] = { .var_name = name_str, .is_persited = persist,    \
+        .count = count_var, .expires = expire,                  \
+        .el_sz = element_sz }
+
+/** TODO in the future, accroding to milan spec, some var may be directly
+ * implemented depending on the descriptors created */
+
+/** Such a structure should be only used for a specific entity only */
+static const struct aem_state_var_info milan_vars[] = {
+    AECP_AEM_NEEDED_VAR(aecp_aem_lock, "lock_ref", false, true, 1,
+        sizeof(struct aecp_aem_lock_state)),
+
+    /* The set-name var serves only as a way to send unsolicited notifications*/
+    AECP_AEM_NEEDED_VAR(aecp_aem_name, "getset-name", true, false, 1,
+        sizeof(struct aecp_aem_name_state)),
+
+    AECP_AEM_NEEDED_VAR(aecp_aem_configuration, "configuration", true, false, 1,
+        sizeof(struct aecp_aem_configuration_state)),
+
+    AECP_AEM_NEEDED_VAR(aecp_aem_clock_domain, "clock_domain", true, false, 1,
+        sizeof(struct aecp_aem_clock_domain_state)),
+
+    AECP_AEM_NEEDED_VAR(aecp_aem_control,"control", true, true, 1,
+        sizeof(struct aecp_aem_control_state)),
+
+    AECP_AEM_NEEDED_VAR(aecp_aem_stream_format, "stream-format", true, false, 1,
+        sizeof(struct aecp_aem_stream_format_state)),
+
+    AECP_AEM_NEEDED_VAR(aecp_aem_sampling_rate, "sampling_rate", true, false, 1,
+        sizeof(struct aecp_aem_sampling_rate_state)),
+
+    AECP_AEM_NEEDED_VAR(aecp_aem_counter_avb_interface, "counter_avb_interface",
+         true, true, 1, sizeof(struct aecp_aem_counter_avb_interface_state)),
+
+    AECP_AEM_NEEDED_VAR(aecp_aem_counter_clock_domain, "counter_clock_domain",
+         true, true, 1, sizeof(struct aecp_aem_counter_clock_domain_state)),
+
+    // There are 2 stream input aaf + crf
+    AECP_AEM_NEEDED_VAR(aecp_aem_counter_stream_input, "counter_stream_input",
+         true, true, 2, sizeof(struct aecp_aem_counter_stream_input_state)),
+
+    AECP_AEM_NEEDED_VAR(aecp_aem_counter_stream_output, "counter_stream_output",
+         true, true, 1, sizeof(struct aecp_aem_counter_stream_output_state)),
+
+    AECP_AEM_NEEDED_VAR(aecp_aem_unsol_notif, "unsol_notif_recorded",false, true,
+        16, sizeof(struct aecp_aem_unsol_notification_state)),
+};
+
+static inline int init_aecp_state_vars(struct aecp *aecp)
+{
+    spa_list_init(&aecp->server->aecp_aem_states);
+    return aecp_aem_init_var_containers(aecp, milan_vars,
+                                            ARRAY_SIZE(milan_vars));
+}
+#endif //AECP_STATE_VARS_H_
