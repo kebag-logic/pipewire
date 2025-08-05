@@ -33,9 +33,6 @@ int handle_cmd_entity_available(struct aecp *aecp, int64_t now, const void *m, i
 	int rc;
 	uint8_t buf[1024];
 
-#ifndef USE_MILAN
-// TODO get the acquire state
-#endif // USE_MILAN
 
 	/* Forge the response for the entity that is locking the device */
 	memcpy(buf, m, len);
@@ -43,11 +40,7 @@ int handle_cmd_entity_available(struct aecp *aecp, int64_t now, const void *m, i
 	p_reply = SPA_PTROFF(h_reply, sizeof(*h_reply), void);
 	avail_reply = (struct avb_packet_aecp_aem_available*)p_reply->payload;
 
-#ifdef USE_MILAN
 	avail_reply->acquired_controller_guid = 0;
-#else // USE_MILAN
-// TODO
-#endif // USE_MILAN
 
 	rc = aecp_aem_get_state_var(aecp, p->aecp.target_guid, aecp_aem_lock, 0, &lock);
 	if (rc) {

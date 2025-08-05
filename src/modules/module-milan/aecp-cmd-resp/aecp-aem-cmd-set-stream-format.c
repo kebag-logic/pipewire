@@ -46,10 +46,8 @@ int handle_cmd_set_stream_format(struct aecp *aecp, int64_t now, const void *m, 
             format_idx++)
     {
         if (desc_stream->stream_formats[format_idx] == stream_format) {
-#ifdef USE_MILAN
     // TODO  Milan v1.2 5.4.2.7 Check whether static/dynamic mapping exists
     // And return return reply_bad_arguments(aecp, m, len); wait for mappings
-#endif //USE_MILAN
             desc_stream->current_format = stream_format;
             sf_state.base_desc.desc = desc;
             sf_state.base_desc.base_info.controller_entity_id = ctrler_index;

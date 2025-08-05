@@ -41,7 +41,6 @@ int handle_cmd_set_configuration(struct aecp *aecp, int64_t now, const void *m, 
 	* a different controller, and it shall also not change its current configuration by non-ATDECC
 	* means (proprietary remote control software, front-panel, ...).
 	*/
-#ifdef USE_MILAN
 	/** WARNING! Milan forces only one entity */
 	desc = server_find_descriptor(server, AVB_AEM_DESC_ENTITY, 0);
 	if (desc == NULL)
@@ -95,9 +94,6 @@ int handle_cmd_set_configuration(struct aecp *aecp, int64_t now, const void *m, 
 				&cfg_state);
 	}
     return reply_success(aecp, buf, len);
-#else
-	return reply_not_implemented(aecp, m, len);
-#endif // USE_MILAN
 }
 
 int handle_unsol_set_configuration(struct aecp *aecp, int64_t now)

@@ -44,15 +44,11 @@ int handle_cmd_lock_entity(struct aecp *aecp, int64_t now, const void *m, int le
 		return reply_status(aecp, AVB_AECP_AEM_STATUS_NO_SUCH_DESCRIPTOR, p, len);
 
 	if (desc_type != AVB_AEM_DESC_ENTITY || desc_id != 0)
-	#ifdef USE_MILAN
 		/*
 		* Milan v1.2: The PAAD-AE shall not allow locking another descriptor than the ENTITY descriptor
 		* (NOT_SUPPORTED shall be returned in this case).
 		*/
 		return reply_not_supported(aecp, m, len);
-	#else
-		return reply_not_implemented(aecp, m, len);
-	#endif
 
 	rc = aecp_aem_get_state_var(aecp, htobe64(p->aecp.target_guid), aecp_aem_lock,
 			desc_id, &lock);
@@ -151,7 +147,6 @@ int handle_unsol_lock_entity(struct aecp *aecp, int64_t now)
 	size_t len = sizeof (*h) + sizeof(*p) + sizeof(*ae);
 	uint64_t target_id = aecp->server->entity_id;
 
-#ifdef USE_MILAN
 	pw_log_debug("Handling unsolicited notification for the lock command\n");
 	rc = aecp_aem_get_state_var(aecp, target_id, aecp_aem_lock, 0, &lock);
 	if (rc) {
@@ -193,6 +188,5 @@ int handle_unsol_lock_entity(struct aecp *aecp, int64_t now)
 	if (rc) {
 		pw_log_error("Unsolicited notification failed \n");
 	}
-#endif;
 	return rc;
 }

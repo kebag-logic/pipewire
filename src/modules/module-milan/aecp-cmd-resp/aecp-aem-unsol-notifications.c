@@ -24,7 +24,6 @@ int handle_cmd_register_unsol_notifications(struct aecp *aecp, int64_t now,
 	uint16_t index;
 	int rc;
 
-#ifdef USE_MILAN
 	for (index = 0; index < AECP_AEM_UNSOL_NOTIFICATION_REG_CONTROLLER_MAX;
 				index++)  {
 
@@ -79,9 +78,6 @@ int handle_cmd_register_unsol_notifications(struct aecp *aecp, int64_t now,
 	}
 
 	return reply_success(aecp, m, len);
-#else
-		return reply_not_implemented(aecp, m, len);
-#endif //USE_MILAN
 }
 
 int handle_cmd_deregister_unsol_notifications(struct aecp *aecp,
@@ -97,7 +93,6 @@ int handle_cmd_deregister_unsol_notifications(struct aecp *aecp,
 	int rc;
 
 
-	#ifdef USE_MILAN
 	// Check the list if registered
 	for (index = 0; index < AECP_AEM_UNSOL_NOTIFICATION_REG_CONTROLLER_MAX;
 				index++)  {
@@ -140,7 +135,4 @@ int handle_cmd_deregister_unsol_notifications(struct aecp *aecp,
 	}
 
 	return reply_success(aecp, m, len);
-#else
-		return reply_not_implemented(aecp, m, len);
-#endif //USE_MILAN
 }

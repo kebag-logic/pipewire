@@ -99,7 +99,6 @@ static struct fsm_state_listener *acmp_fsm_find(struct acmp *acmp, int type, uin
 	return NULL;
 }
 
-#ifdef USE_MILAN
 
 #define AECP_MILAN_ACMP_EVT_TMR_NO_RESP			0
 #define AECP_MILAN_ACMP_EVT_TMR_RETRY			1
@@ -886,7 +885,6 @@ static const struct listener_fsm_cmd *cmd_listeners_states[MILAN_ACMP_LISTENER_S
 	[MILAN_ACMP_LISTENER_STA_SETTLED_RSV_OK] = listener_settled_rsv_ok,
 };
 
-#endif // USE_MILAN
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-function"
@@ -922,33 +920,6 @@ static void *stream_listener_fsm_new(struct acmp *acmp, uint32_t type)
 	return p;
 }
 
-#ifndef USE_MILAN
-static void *pending_new(struct acmp *acmp, uint32_t type, uint64_t now,
-	uint32_t timeout_ms, const void *m, size_t size)
-{
-	struct pending *p;
-	struct avb_ethernet_header *h;
-	struct avb_packet_acmp *pm;
-
-	p = calloc(1, sizeof(*p) + size);
-	if (p == NULL)
-		return NULL;
-	p->last_time = now;
-	p->timeout = timeout_ms * SPA_NSEC_PER_MSEC;
-	p->sequence_id = acmp->sequence_id[type]++;
-	p->size = size;
-	p->ptr = SPA_PTROFF(p, sizeof(*p), void);
-	memcpy(p->ptr, m, size);
-
-	h = p->ptr;
-	pm = SPA_PTROFF(h, sizeof(*h), void);
-	p->old_sequence_id = ntohs(pm->sequence_id);
-	pm->sequence_id = htons(p->sequence_id);
-	spa_list_append(&acmp->pending[type], &p->link);
-
-	return p->ptr;
-}
-#endif // USE_MILAN
 
 static struct pending *pending_find(struct acmp *acmp, uint32_t type,
 	uint16_t sequence_id)
@@ -987,16 +958,6 @@ static int reply_not_supported(struct acmp *acmp, uint8_t type,
 	return avb_server_send_packet(server, h->src, AVB_TSN_ETH, buf, len);
 }
 
-#ifndef USE_MILAN
-static int retry_pending(struct acmp *acmp, uint64_t now, struct pending *p)
-{
-	struct server *server = acmp->server;
-	struct avb_ethernet_header *h = p->ptr;
-	p->retry++;
-	p->last_time = now;
-	return avb_server_send_packet(server, h->dest, AVB_TSN_ETH, p->ptr, p->size);
-}
-#endif // USE_MILAN
 
 static int handle_connect_tx_command(struct acmp *acmp, uint64_t now,
 	 const void *m, int len)
@@ -1009,34 +970,6 @@ static int handle_connect_tx_command(struct acmp *acmp, uint64_t now,
 	int status = AVB_ACMP_STATUS_SUCCESS;
 	struct stream *stream;
 
-#ifndef USE_MILAN
-	if (be64toh(p->talker_guid) != server->entity_id)
-		return 0;
-
-	memcpy(buf, m, len);
-	stream = server_find_stream(server, SPA_DIRECTION_OUTPUT,
-			reply->talker_unique_id);
-	if (stream == NULL) {
-		status = AVB_ACMP_STATUS_TALKER_NO_STREAM_INDEX;
-		goto done;
-	}
-
-	// Milan V1.2 5.5.4.1
-
-	AVB_PACKET_ACMP_SET_MESSAGE_TYPE(reply,
-		AVB_ACMP_MESSAGE_TYPE_CONNECT_TX_RESPONSE);
-	reply->stream_id = htobe64(stream->id);
-
-	stream_activate(stream, now);
-
-	memcpy(reply->stream_dest_mac, stream->addr, 6);
-	reply->connection_count = htons(1);
-	reply->stream_vlan_id = htons(stream->vlan_id);
-
-done:
-	AVB_PACKET_ACMP_SET_STATUS(reply, status);
-	return avb_server_send_packet(server, h->dest, AVB_TSN_ETH, buf, len);
-#else
 	uint64_t talker_guid;
 	uint16_t talker_unique_id;
 	uint16_t flags;
@@ -1079,7 +1012,6 @@ done:
 	AVB_PACKET_ACMP_SET_STATUS(reply, status);
 	return avb_server_send_packet(server, h->dest, AVB_TSN_ETH, buf, len);
 
-#endif // USE_MILAN
 }
 
 /* IEEE 1722.1-2021, Sec. 8.1.1. Connecting a Stream */
@@ -1097,7 +1029,6 @@ static int handle_connect_tx_response(struct acmp *acmp,
 	struct stream *stream;
 	int res;
 
-#if USE_MILAN
 	(void) res;
 	(void) pending;
 	(void)sequence_id;
@@ -1147,42 +1078,6 @@ static int handle_connect_tx_response(struct acmp *acmp,
 	// Handover the parameters
 	fcmd->state_handler(acmp, fsm, m, len, now);
 	return 0;
-#else
-
-	memcpy(buf, m, len);
-	if (be64toh(resp->listener_guid) != server->entity_id)
-		return 0;
-
-	sequence_id = ntohs(resp->sequence_id);
-
-	pending = pending_find(acmp, PENDING_TALKER, sequence_id);
-	if (pending == NULL)
-		return 0;
-
-	h = pending->ptr;
-	pending->size = SPA_MIN((int)pending->size, len);
-	memcpy(h, m, pending->size);
-
-	reply = SPA_PTROFF(h, sizeof(*h), void);
-	reply->sequence_id = htons(pending->old_sequence_id);
-	AVB_PACKET_ACMP_SET_MESSAGE_TYPE(reply,
-		AVB_ACMP_MESSAGE_TYPE_CONNECT_RX_RESPONSE);
-
-	stream = server_find_stream(server, SPA_DIRECTION_INPUT,
-			ntohs(reply->listener_unique_id));
-	if (stream == NULL)
-		return 0;
-
-	stream->peer_id = be64toh(reply->stream_id);
-	memcpy(stream->addr, reply->stream_dest_mac, 6);
-	stream_activate(stream, now);
-
-	res = avb_server_send_packet(server, h->dest, AVB_TSN_ETH, h, pending->size);
-
-	pending_free(acmp, pending);
-
-	return res;
-#endif
 }
 
 static int handle_disconnect_tx_command(struct acmp *acmp, uint64_t now,
@@ -1287,7 +1182,6 @@ static int handle_connect_rx_command(struct acmp *acmp, uint64_t now,
 
 	pw_log_warn("%s", __func__);
 
-#if USE_MILAN
 	(void)flags;
 	(void)res;
 	(void) reply;
@@ -1328,30 +1222,6 @@ static int handle_connect_rx_command(struct acmp *acmp, uint64_t now,
 	// Handover the parameters
 	fcmd->state_handler(acmp, fsm, m, len, now);
 	return 0;
-#else
-
-
-	if (be64toh(p->listener_guid) != server->entity_id)
-		return 0;
-
-	// TODO: Check if entity is locked and respond with CONTROLLER_NOT_AUTHORIZED
-
-
-	h = pending_new(acmp, PENDING_TALKER, now,
-		AVB_ACMP_TIMEOUT_CONNECT_TX_COMMAND_MS, m, len);
-	if (h == NULL)
-	return -errno;
-
-	cmd = SPA_PTROFF(h, sizeof(*h), void);
-
-	// TODO: Continue here
-	AVB_PACKET_ACMP_SET_MESSAGE_TYPE(cmd,
-			AVB_ACMP_MESSAGE_TYPE_CONNECT_TX_COMMAND);
-
-	AVB_PACKET_ACMP_SET_STATUS(cmd, AVB_ACMP_STATUS_SUCCESS);
-
-	return avb_server_send_packet(server, h->dest, AVB_TSN_ETH, h, len);
-#endif
 }
 
 static int handle_ignore(struct acmp *acmp, uint64_t now,
@@ -1373,7 +1243,6 @@ static int handle_disconnect_rx_command(struct acmp *acmp, uint64_t now,
 
 	pw_log_info("HANDLE: len: %i", len);
 
-#if USE_MILAN
 	(void) res;
 	(void) flags;
 	const struct listener_fsm_cmd *fcmd;
@@ -1416,18 +1285,6 @@ static int handle_disconnect_rx_command(struct acmp *acmp, uint64_t now,
 	fcmd->state_handler(acmp, fsm, m, len, now);
 	return 0;
 
-#else
-	h = pending_new(acmp, PENDING_TALKER, now,
-			AVB_ACMP_TIMEOUT_DISCONNECT_TX_COMMAND_MS, m, len);
-	if (h == NULL)
-		return -errno;
-
-	cmd = SPA_PTROFF(h, sizeof(*h), void);
-	AVB_PACKET_ACMP_SET_MESSAGE_TYPE(cmd, AVB_ACMP_MESSAGE_TYPE_DISCONNECT_TX_COMMAND);
-	AVB_PACKET_ACMP_SET_STATUS(cmd, AVB_ACMP_STATUS_SUCCESS);
-	return avb_server_send_packet(server, h->dest, AVB_TSN_ETH, h, len);
-	return 0;
-#endif
 
 }
 
@@ -1499,22 +1356,6 @@ static void acmp_destroy(void *data)
 
 static void check_timeout(struct acmp *acmp, uint64_t now, uint16_t type)
 {
-#ifndef USE_MILAN
-	struct pending *p, *t;
-
-	spa_list_for_each_safe(p, t, &acmp->pending[type], link) {
-		if (p->last_time + p->timeout > now)
-			continue;
-
-		if (p->retry == 0) {
-			pw_log_info("%p: pending timeout, retry", p);
-			retry_pending(acmp, now, p);
-		} else {
-			pw_log_info("%p: pending timeout, fail", p);
-			pending_free(acmp, p);
-		}
-	}
-#else
 	struct fsm_state_listener *p, *t;
 	const struct listener_fsm_cmd *cmd = NULL;
 	int evt, rc;
@@ -1566,20 +1407,13 @@ static void check_timeout(struct acmp *acmp, uint64_t now, uint16_t type)
 		if (rc) {
 			pw_log_error("Timers issues\n");
 		}
-#endif // USE_MILAN
 	}
 }
 static void acmp_periodic(void *data, uint64_t now)
 {
 	struct acmp *acmp = data;
-#ifndef USE_MILAN
-	check_timeout(acmp, now, PENDING_TALKER);
-	check_timeout(acmp, now, PENDING_LISTENER);
-	check_timeout(acmp, now, PENDING_CONTROLLER);
-#else
 	check_timeout(acmp, now, STREAM_LISTENER_FSM);
 	check_timeout(acmp, now, STREAM_TALKER_FSM);
-#endif // USE_MILAN
 
 }
 
@@ -1628,14 +1462,8 @@ struct avb_acmp *avb_acmp_register(struct server *server)
 		return NULL;
 
 	acmp->server = server;
-#ifndef USE_MILAN
-	spa_list_init(&acmp->pending[PENDING_TALKER]);
-	spa_list_init(&acmp->pending[PENDING_LISTENER]);
-	spa_list_init(&acmp->pending[PENDING_CONTROLLER]);
-#else // USE_MILAN
 	spa_list_init(&acmp->stream_fsm[STREAM_LISTENER_FSM]);
 	spa_list_init(&acmp->stream_fsm[STREAM_TALKER_FSM]);
-#endif // USE_MILAN
 
 	avdecc_server_add_listener(server, &acmp->server_listener,
 							    &server_events, acmp);
