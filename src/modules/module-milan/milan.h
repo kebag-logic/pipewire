@@ -2,8 +2,8 @@
 /* SPDX-FileCopyrightText: Copyright © 2022 Wim Taymans */
 /* SPDX-License-Identifier: MIT */
 
-#ifndef PIPEWIRE_AVB_H
-#define PIPEWIRE_AVB_H
+#ifndef PIPEWIRE_MILAN_H
+#define PIPEWIRE_MILAN_H
 
 #include <stddef.h>
 
@@ -13,14 +13,14 @@ extern "C" {
 
 struct pw_context;
 struct pw_properties;
-struct pw_avb;
+struct pw_milan;
 
-struct pw_avb *pw_avb_new(struct pw_context *context,
+struct pw_milan *pw_milan_new(struct pw_context *context,
 		struct pw_properties *props, size_t user_data_size);
-void pw_avb_destroy(struct pw_avb *avb);
+void pw_milan_destroy(struct pw_milan *milan);
 
 #ifdef __cplusplus
 }  /* extern "C" */
 #endif
 
-#endif /* PIPEWIRE_AVB_H */
+#endif /* PIPEWIRE_MILAN_H */

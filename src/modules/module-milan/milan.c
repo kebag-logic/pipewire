@@ -2,12 +2,12 @@
 /* SPDX-FileCopyrightText: Copyright © 2022 Wim Taymans */
 /* SPDX-License-Identifier: MIT */
 
-#include "avb.h"
+#include "milan.h"
 #include "internal.h"
 
 #include <spa/support/cpu.h>
 
-struct pw_avb *pw_avb_new(struct pw_context *context,
+struct pw_milan *pw_milan_new(struct pw_context *context,
 		struct pw_properties *props, size_t user_data_size)
 {
 	struct impl *impl;
@@ -62,7 +62,7 @@ struct pw_avb *pw_avb_new(struct pw_context *context,
 
 	avdecc_server_new(impl, &props->dict);
 
-	return (struct pw_avb*)impl;
+	return (struct pw_milan*)impl;
 
 error_free:
 	free(impl);
@@ -82,8 +82,8 @@ static void impl_free(struct impl *impl)
 	free(impl);
 }
 
-void pw_avb_destroy(struct pw_avb *avb)
+void pw_milan_destroy(struct pw_milan *milan)
 {
-	struct impl *impl = (struct impl*)avb;
+	struct impl *impl = (struct impl*)milan;
 	impl_free(impl);
 }
