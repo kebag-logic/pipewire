@@ -44,15 +44,7 @@ int handle_cmd_lock_entity(struct aecp *aecp, int64_t now, const void *m, int le
 		return reply_status(aecp, AVB_AECP_AEM_STATUS_NO_SUCH_DESCRIPTOR, p, len);
 
 	if (desc_type != AVB_AEM_DESC_ENTITY || desc_id != 0)
-	#ifdef USE_MILAN
-		/*
-		* Milan v1.2: The PAAD-AE shall not allow locking another descriptor than the ENTITY descriptor
-		* (NOT_SUPPORTED shall be returned in this case).
-		*/
-		return reply_not_supported(aecp, m, len);
-	#else
 		return reply_not_implemented(aecp, m, len);
-	#endif
 
 	rc = aecp_aem_get_state_var(aecp, htobe64(p->aecp.target_guid), aecp_aem_lock,
 			desc_id, &lock);
@@ -151,48 +143,5 @@ int handle_unsol_lock_entity(struct aecp *aecp, int64_t now)
 	size_t len = sizeof (*h) + sizeof(*p) + sizeof(*ae);
 	uint64_t target_id = aecp->server->entity_id;
 
-#ifdef USE_MILAN
-	pw_log_debug("Handling unsolicited notification for the lock command\n");
-	rc = aecp_aem_get_state_var(aecp, target_id, aecp_aem_lock, 0, &lock);
-	if (rc) {
-		pw_log_error("while getting lock in the unsol lock callback\n");
-		spa_assert(0);
-	}
-
-	has_expired = (now > lock.base_info.expire_timeout);
-	if (!lock.base_info.needs_update && !has_expired) {
-		pw_log_debug("No need for update exp %ld now %ld\n",
-				    lock.base_info.expire_timeout, now);
-		return 0;
-	}
-	// Freshen up the buffer
-	memset(buf, 0, sizeof(buf));
-	ae = (struct avb_packet_aecp_aem_lock*)p->payload;
-	if (!lock.is_locked || has_expired) {
-		ae->locked_guid = 0;
-		ae->flags = htonl(AECP_AEM_LOCK_ENTITY_FLAG_UNLOCK);
-		lock.is_locked = false;
-		lock.base_info.expire_timeout = LONG_MAX;
-	} else {
-		ae->locked_guid = htobe64(lock.locked_id);
-		ae->flags = 0;
-	}
-
-	lock.base_info.needs_update = false;
-	rc = aecp_aem_refresh_state_var(aecp, aecp->server->entity_id, aecp_aem_lock,
-		0, &lock);
-	if (rc)  {
-		pw_log_error("while refreshing var lock\n");
-		spa_assert(0);
-	}
-
-	AVB_PACKET_AEM_SET_COMMAND_TYPE(p, AVB_AECP_AEM_CMD_LOCK_ENTITY);
-	/** Setup the packet for the unsolicited notification*/
-	rc = reply_unsolicited_notifications(aecp, &lock.base_info, buf, len,
-		 has_expired);
-	if (rc) {
-		pw_log_error("Unsolicited notification failed \n");
-	}
-#endif;
 	return rc;
 }
