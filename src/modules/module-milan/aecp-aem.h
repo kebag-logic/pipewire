@@ -9,7 +9,7 @@
 
 #include "../module-avb/aecp.h"
 #include "aecp-cmd-resp/aecp-aem-types.h"
-#include "aecp-aem-counters.h"
+#include "../module-avb/aecp-aem-counters.h"
 
 struct avb_packet_aecp_aem_acquire {
 	uint32_t flags;
