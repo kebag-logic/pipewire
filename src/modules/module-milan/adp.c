@@ -11,7 +11,7 @@
 #include "adp.h"
 #include "../module-avb/aecp-aem-descriptors.h
 #include "internal.h"
-#include "utils.h"
+#include "../module-avb/utils.h"
 
 static const uint8_t mac[6] = AVB_BROADCAST_MAC;
 

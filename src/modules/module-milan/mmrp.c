@@ -6,7 +6,7 @@
 
 #include <pipewire/pipewire.h>
 
-#include "utils.h"
+#include "../module-avb/utils.h"
 #include "mmrp.h"
 
 static const uint8_t mmrp_mac[6] = AVB_MMRP_MAC;

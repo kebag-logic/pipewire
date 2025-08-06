@@ -11,7 +11,7 @@
 
 #include <pipewire/pipewire.h>
 
-#include "utils.h"
+#include "../module-avb/utils.h"
 #include "msrp.h"
 
 static const uint8_t msrp_mac[6] = AVB_MSRP_MAC;

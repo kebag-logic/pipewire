@@ -8,7 +8,7 @@
 #include "../aecp.h"
 #include "../aecp-aem-counters.h"
 #include "../aecp-aem-state.h"
-#include "../utils.h"
+#include "../../module-avb/utils.h"
 
 #include "aecp-aem-cmd-get-counters.h"
 #include "aecp-aem-helpers.h"

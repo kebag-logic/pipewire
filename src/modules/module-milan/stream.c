@@ -19,7 +19,7 @@
 #include "../module-avb/aaf.h"
 #include "iec61883.h"
 #include "stream.h"
-#include "utils.h"
+#include "../module-avb/utils.h"
 #include "../module-avb/aecp-aem-descriptors.h
 
 static void on_stream_destroy(void *d)

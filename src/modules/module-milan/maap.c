@@ -8,7 +8,7 @@
 
 #include <pipewire/pipewire.h>
 
-#include "utils.h"
+#include "../module-avb/utils.h"
 #include "maap.h"
 
 #define MAAP_ALLOCATION_POOL_SIZE	0xFE00

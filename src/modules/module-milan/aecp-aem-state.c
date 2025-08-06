@@ -7,7 +7,7 @@
 
 #include "aecp-aem-state.h"
 #include "aecp-aem.h"
-#include "utils.h"
+#include "../module-avb/utils.h"
 #include "internal.h"
 
 struct aecp_aem_state_handlers {

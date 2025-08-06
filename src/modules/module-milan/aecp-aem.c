@@ -10,7 +10,7 @@
 #include "aecp-aem.h"
 #include "aecp-aem-state.h"
 #include "../module-avb/aecp-aem-descriptors.h
-#include "utils.h"
+#include "../module-avb/utils.h"
 
 /** Below is the list of command handlers */
 #include "aecp-cmd-resp/aecp-aem-helpers.h"
