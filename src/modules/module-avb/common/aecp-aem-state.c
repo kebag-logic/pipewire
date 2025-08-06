@@ -6,7 +6,7 @@
 #include <limits.h>
 
 #include "aecp-aem-state.h"
-#include "aecp-aem.h"
+#include "../aecp-aem.h"
 #include "utils.h"
 #include "internal.h"
 

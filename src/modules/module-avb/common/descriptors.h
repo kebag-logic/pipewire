@@ -9,7 +9,7 @@
 #define DESCRIPTORS_H
 
 #include "adp.h"
-#include "aecp-aem.h"
+#include "../aecp-aem.h"
 #include "aecp-aem-descriptors.h"
 #include "aecp-aem-stream-format-defs.h"
 #include "aecp-aem-controls.h"
