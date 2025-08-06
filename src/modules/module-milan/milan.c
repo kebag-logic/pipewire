@@ -3,7 +3,7 @@
 /* SPDX-License-Identifier: MIT */
 
 #include "milan.h"
-#include "internal.h"
+#include "../module-avb/internal.h"
 
 #include <spa/support/cpu.h>
 

@@ -6,7 +6,7 @@
 #ifndef __AECP_AEM_UNSOL_HELPER_H__
 #define __AECP_AEM_UNSOL_HELPER_H__
 
-#include "../internal.h"
+#include "../../module-avb/internal.h"
 
 #include "../../module-avb/aecp-aem-state.h"
 #include "../aecp-aem.h"

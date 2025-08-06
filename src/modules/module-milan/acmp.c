@@ -13,7 +13,7 @@
 
 #include "acmp.h"
 #include "../module-avb/msrp.h"
-#include "internal.h"
+#include "../module-avb/internal.h"
 #include "../module-avb/stream.h"
 #include "aecp-aem.h"
 
