@@ -11,7 +11,7 @@
 #include <pipewire/pipewire.h>
 #include <limits.h>
 
-#include "acmp.h"
+#include "common/acmp.h"
 #include "common/msrp.h"
 #include "common/internal.h"
 #include "common/stream.h"
