@@ -779,7 +779,7 @@ if build_module_avb
       'module-milan/aecp.c',
       'module-milan/aecp-aem.c',
       'module-milan/aecp-aem-state.c',
-      'module-milan/avdecc.c',
+      'module-avb/avdecc.c',
       'module-milan/maap.c',
       'module-milan/mmrp.c',
       'module-milan/mrp.c',
@@ -806,6 +806,7 @@ if build_module_avb
     install_dir : modules_install_dir,
     install_rpath: modules_install_dir,
     dependencies : [mathlib, dl_lib, rt_lib, pipewire_dep],
+    c_args: ['-DUSE_MILAN'],
   )
 endif
 summary({'avb': build_module_avb}, bool_yn: true, section: 'Optional Modules')
