@@ -5,7 +5,7 @@
 #ifndef AVB_MVRP_H
 #define AVB_MVRP_H
 
-#include "mrp.h"
+#include "../module-avb/mrp.h"
 #include "internal.h"
 
 #define AVB_MVRP_ETH 0x88f5

@@ -6,7 +6,7 @@
 #define AVB_MSRP_H
 
 #include "internal.h"
-#include "mrp.h"
+#include "../module-avb/mrp.h"
 
 #define AVB_MSRP_ETH 0x22ea
 #define AVB_MSRP_MAC { 0x01, 0x80, 0xc2, 0x00, 0x00, 0xe };
