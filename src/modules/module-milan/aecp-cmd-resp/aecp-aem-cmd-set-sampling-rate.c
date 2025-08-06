@@ -3,7 +3,7 @@
 /* SPDX-FileCopyrightText: Copyright © 2025 Alex Malki <alexandre.malki@kebag-logic.com> */
 /* SPDX-License-Identifier: MIT  */
 
-#include "../aecp-aem-state.h"
+#include "../../module-avb/aecp-aem-state.h"
 #include "../../module-avb/descriptors.h"
 #include "aecp-aem-helpers.h"
 #include "aecp-aem-types.h"

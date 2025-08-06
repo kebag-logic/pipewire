@@ -8,7 +8,7 @@
 #include <limits.h>
 
 #include "aecp-aem.h"
-#include "aecp-aem-state.h"
+#include "../module-avb/aecp-aem-state.h"
 #include "../module-avb/aecp-aem-descriptors.h
 #include "../module-avb/utils.h"
 

@@ -8,7 +8,7 @@
 
 #include "../internal.h"
 
-#include "../aecp-aem-state.h"
+#include "../../module-avb/aecp-aem-state.h"
 #include "../aecp-aem.h"
 #include "../../module-avb/aecp.h"
 #include "aecp-aem-types.h"
