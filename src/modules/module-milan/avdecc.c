@@ -28,7 +28,7 @@
 #include "adp.h"
 #include "aecp.h"
 #include "../module-avb/maap.h"
-#include "mmrp.h"
+#include "../module-avb/mmrp.h"
 #include "msrp.h"
 #include "mvrp.h"
 #include "../module-avb/descriptors.h"
