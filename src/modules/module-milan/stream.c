@@ -17,7 +17,7 @@
 #include <spa/param/audio/format-utils.h>
 
 #include "../module-avb/aaf.h"
-#include "iec61883.h"
+#include "../module-avb/iec61883.h"
 #include "stream.h"
 #include "../module-avb/utils.h"
 #include "../module-avb/aecp-aem-descriptors.h
