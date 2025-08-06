@@ -10,7 +10,7 @@
 #include <pipewire/pipewire.h>
 
 #include "aecp.h"
-#include "../aecp-aem.h"
+#include "aecp-aem.h"
 #include "aecp-aem-controls.h"
 #include "internal.h"
 

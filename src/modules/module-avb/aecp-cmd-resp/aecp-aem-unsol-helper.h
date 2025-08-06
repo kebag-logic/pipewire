@@ -9,7 +9,7 @@
 #include "../common/internal.h"
 
 #include "../common/aecp-aem-state.h"
-#include "../aecp-aem.h"
+#include "../common/aecp-aem.h"
 #include "../common/aecp.h"
 #include "aecp-aem-types.h"
 

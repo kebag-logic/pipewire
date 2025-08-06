@@ -9,7 +9,7 @@
 #include "../../module-avb/common/internal.h"
 
 #include "../../module-avb/common/aecp-aem-state.h"
-#include "../aecp-aem.h"
+#include "../../module-avb/common/aecp-aem.h"
 #include "../../module-avb/common/aecp.h"
 #include "aecp-aem-types.h"
 

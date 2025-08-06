@@ -15,7 +15,7 @@
 #include "common/msrp.h"
 #include "common/internal.h"
 #include "common/stream.h"
-#include "aecp-aem.h"
+#include "common/aecp-aem.h"
 
 static const uint8_t mac[6] = AVB_BROADCAST_MAC;
 

@@ -7,6 +7,6 @@
 #define __AVB_AECP_AEM_CMD_RESP_COMMON_H__
 
 #include <stdint.h>
-#include "../aecp-aem.h"
+#include "../../module-avb/common/aecp-aem.h"
 
 #endif // __AVB_AECP_AEM_AVAILABLE_H__

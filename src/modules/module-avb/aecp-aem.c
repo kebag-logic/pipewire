@@ -7,7 +7,7 @@
 #include <time.h>
 #include <limits.h>
 
-#include "aecp-aem.h"
+#include "common/aecp-aem.h"
 #include "common/aecp-aem-state.h"
 #include "common/aecp-aem-descriptors.h"
 #include "common/utils.h"
