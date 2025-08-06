@@ -5,7 +5,7 @@
 
 
 #include "../../module-avb/aecp-aem-descriptors.h
-#include "../aecp.h"
+#include "../../module-avb/aecp.h"
 #include "../aecp-aem-counters.h"
 #include "../aecp-aem-state.h"
 #include "../../module-avb/utils.h"

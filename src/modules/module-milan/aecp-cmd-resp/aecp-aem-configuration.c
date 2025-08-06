@@ -4,7 +4,7 @@
 /* SPDX-License-Identifier: MIT  */
 
 #include "../aecp-aem-state.h"
-#include "../aecp.h"
+#include "../../module-avb/aecp.h"
 #include "aecp-aem-helpers.h"
 #include "aecp-aem-types.h"
 

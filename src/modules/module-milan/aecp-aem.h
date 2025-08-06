@@ -7,7 +7,7 @@
 #ifndef AVB_AEM_H
 #define AVB_AEM_H
 
-#include "aecp.h"
+#include "../module-avb/aecp.h"
 #include "aecp-cmd-resp/aecp-aem-types.h"
 #include "aecp-aem-counters.h"
 

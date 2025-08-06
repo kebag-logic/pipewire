@@ -10,7 +10,7 @@
 
 #include "../aecp-aem-state.h"
 #include "../aecp-aem.h"
-#include "../aecp.h"
+#include "../../module-avb/aecp.h"
 #include "aecp-aem-types.h"
 
 #define AECP_AEM_MIN_PACKET_LENGTH AVB_PACKET_MIN_SIZE
