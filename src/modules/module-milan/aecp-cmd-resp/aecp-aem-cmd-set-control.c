@@ -6,9 +6,9 @@
 
 #include <limits.h>
 
-#include "../descriptors.h"
+#include "../../module-avb/descriptors.h"
 #include "../aecp-aem-state.h"
-#include "../aecp-aem-descriptors.h"
+#include "../../module-avb/aecp-aem-descriptors.h
 #include "../aecp-aem-controls.h"
 
 #include "aecp-aem-helpers.h"

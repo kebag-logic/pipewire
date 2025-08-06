@@ -2,7 +2,7 @@
 #define __AECP_AEM_NAME_COMMON_H__
 
 #include <stdint.h>
-#include "../aecp-aem-descriptors.h"
+#include "../../module-avb/aecp-aem-descriptors.h
 
 #define AECP_AEM_NAME_INDEX_ENTITY_ITSELF       (0)
 #define AECP_AEM_NAME_INDEX_ENTITY_GROUP        (1)

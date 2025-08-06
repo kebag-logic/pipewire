@@ -9,7 +9,7 @@
 #include <pipewire/pipewire.h>
 
 #include "adp.h"
-#include "aecp-aem-descriptors.h"
+#include "../module-avb/aecp-aem-descriptors.h
 #include "internal.h"
 #include "utils.h"
 

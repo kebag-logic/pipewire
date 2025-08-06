@@ -7,7 +7,7 @@
 #include <limits.h>
 
 #include "../aecp-aem-state.h"
-#include "../descriptors.h"
+#include "../../module-avb/descriptors.h"
 
 #include "aecp-aem-types.h"
 #include "aecp-aem-lock-entity.h"

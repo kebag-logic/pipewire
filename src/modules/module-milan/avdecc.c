@@ -31,10 +31,9 @@
 #include "mmrp.h"
 #include "msrp.h"
 #include "mvrp.h"
-#include "descriptors.h"
 #include "aecp-state-vars.h"
+#include "../module-avb/descriptors.h"
 #include "utils.h"
-#include "descriptors.h"
 
 #define DEFAULT_INTERVAL_S	0
 	// Milan ACMP timeouts are at 200ms

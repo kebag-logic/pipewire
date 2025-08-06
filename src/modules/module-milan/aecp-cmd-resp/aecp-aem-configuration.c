@@ -8,7 +8,7 @@
 #include "aecp-aem-helpers.h"
 #include "aecp-aem-types.h"
 
-#include "../aecp-aem-descriptors.h"
+#include "../../module-avb/aecp-aem-descriptors.h
 #include "aecp-aem-configuration.h"
 #include "aecp-aem-unsol-helper.h"
 
