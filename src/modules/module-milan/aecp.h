@@ -5,7 +5,7 @@
 #ifndef AVB_AECP_H
 #define AVB_AECP_H
 
-#include "packets.h"
+#include "../module-avb/packets.h"
 #include "internal.h"
 
 #define AVB_AECP_MESSAGE_TYPE_AEM_COMMAND		0

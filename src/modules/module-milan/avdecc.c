@@ -21,7 +21,7 @@
 #include <pipewire/pipewire.h>
 
 #include "avb.h"
-#include "packets.h"
+#include "../module-avb/packets.h"
 #include "internal.h"
 #include "stream.h"
 #include "acmp.h"

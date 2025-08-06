@@ -5,7 +5,7 @@
 #ifndef AVB_ADP_H
 #define AVB_ADP_H
 
-#include "packets.h"
+#include "../module-avb/packets.h"
 #include "internal.h"
 
 #define AVB_ADP_MESSAGE_TYPE_ENTITY_AVAILABLE		0

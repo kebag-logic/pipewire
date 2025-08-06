@@ -5,7 +5,7 @@
 #ifndef AVB_ACMP_H
 #define AVB_ACMP_H
 
-#include "packets.h"
+#include "../module-avb/packets.h"
 #include "internal.h"
 
 /*IEEE 1722.1-2021, Table 8-2 - message_type field*/
