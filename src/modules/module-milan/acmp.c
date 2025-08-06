@@ -12,7 +12,7 @@
 #include <limits.h>
 
 #include "acmp.h"
-#include "msrp.h"
+#include "../module-avb/msrp.h"
 #include "internal.h"
 #include "stream.h"
 #include "aecp-aem.h"

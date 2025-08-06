@@ -87,8 +87,8 @@ struct stream {
 	struct avb_mvrp_attribute *vlan_attr;
 };
 
-#include "msrp.h"
-#include "mvrp.h"
+#include "../module-avb/msrp.h"
+#include "../module-avb/mvrp.h"
 #include "../module-avb/maap.h"
 
 struct stream *server_create_stream(struct server *server,
