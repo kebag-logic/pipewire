@@ -8,9 +8,9 @@
 #include <limits.h>
 
 #include "aecp-aem.h"
-#include "../module-avb/aecp-aem-state.h"
-#include "../module-avb/aecp-aem-descriptors.h
-#include "../module-avb/utils.h"
+#include "../module-avb/common/aecp-aem-state.h"
+#include "../module-avb/common/aecp-aem-descriptors.h"
+#include "../module-avb/common/utils.h"
 
 /** Below is the list of command handlers */
 #include "aecp-cmd-resp/aecp-aem-helpers.h"

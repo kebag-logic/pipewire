@@ -9,7 +9,7 @@
 
 
 #include "aecp-aem-types.h"
-#include "../../module-avb/aecp-aem-state.h"
+#include "../../module-avb/common/aecp-aem-state.h"
 #include "../aecp-aem.h"
 
 static inline int reply_status(struct aecp *aecp, int status, const void *m, int len)

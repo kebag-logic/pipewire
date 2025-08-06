@@ -5,8 +5,8 @@
 #ifndef AVB_ACMP_H
 #define AVB_ACMP_H
 
-#include "packets.h"
-#include "internal.h"
+#include "common/packets.h"
+#include "common/internal.h"
 
 /*IEEE 1722.1-2021, Table 8-2 - message_type field*/
 #define AVB_ACMP_MESSAGE_TYPE_CONNECT_TX_COMMAND		0

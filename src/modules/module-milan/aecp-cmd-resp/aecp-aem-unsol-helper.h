@@ -6,11 +6,11 @@
 #ifndef __AECP_AEM_UNSOL_HELPER_H__
 #define __AECP_AEM_UNSOL_HELPER_H__
 
-#include "../../module-avb/internal.h"
+#include "../../module-avb/common/internal.h"
 
-#include "../../module-avb/aecp-aem-state.h"
+#include "../../module-avb/common/aecp-aem-state.h"
 #include "../aecp-aem.h"
-#include "../../module-avb/aecp.h"
+#include "../../module-avb/common/aecp.h"
 #include "aecp-aem-types.h"
 
 #define AECP_AEM_MIN_PACKET_LENGTH AVB_PACKET_MIN_SIZE

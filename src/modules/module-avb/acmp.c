@@ -12,9 +12,9 @@
 #include <limits.h>
 
 #include "acmp.h"
-#include "msrp.h"
-#include "internal.h"
-#include "stream.h"
+#include "common/msrp.h"
+#include "common/internal.h"
+#include "common/stream.h"
 #include "aecp-aem.h"
 
 static const uint8_t mac[6] = AVB_BROADCAST_MAC;

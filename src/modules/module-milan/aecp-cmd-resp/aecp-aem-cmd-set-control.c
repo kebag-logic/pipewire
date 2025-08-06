@@ -6,10 +6,10 @@
 
 #include <limits.h>
 
-#include "../../module-avb/descriptors.h"
-#include "../../module-avb/aecp-aem-state.h"
-#include "../../module-avb/aecp-aem-descriptors.h
-#include "../../module-avb/aecp-aem-controls.h"
+#include "../../module-avb/common/descriptors.h"
+#include "../../module-avb/common/aecp-aem-state.h"
+#include "../../module-avb/common/aecp-aem-descriptors.h"
+#include "../../module-avb/common/aecp-aem-controls.h"
 
 #include "aecp-aem-helpers.h"
 #include "aecp-aem-types.h"

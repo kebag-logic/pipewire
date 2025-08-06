@@ -6,10 +6,10 @@
 
 #include <limits.h>
 
-#include "../descriptors.h"
-#include "../aecp-aem-state.h"
-#include "../aecp-aem-descriptors.h"
-#include "../aecp-aem-controls.h"
+#include "../common/descriptors.h"
+#include "../common/aecp-aem-state.h"
+#include "../common/aecp-aem-descriptors.h"
+#include "../common/aecp-aem-controls.h"
 
 #include "aecp-aem-helpers.h"
 #include "aecp-aem-types.h"

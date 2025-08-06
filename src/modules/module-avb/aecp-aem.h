@@ -7,9 +7,9 @@
 #ifndef AVB_AEM_H
 #define AVB_AEM_H
 
-#include "aecp.h"
+#include "common/aecp.h"
 #include "aecp-cmd-resp/aecp-aem-types.h"
-#include "aecp-aem-counters.h"
+#include "common/aecp-aem-counters.h"
 
 struct avb_packet_aecp_aem_acquire {
 	uint32_t flags;

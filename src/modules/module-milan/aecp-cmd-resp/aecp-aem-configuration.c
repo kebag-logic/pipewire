@@ -3,12 +3,12 @@
 /* SPDX-FileCopyrightText: Copyright © 2025 Alex Malki <alexandre.malki@kebag-logic.com> */
 /* SPDX-License-Identifier: MIT  */
 
-#include "../../module-avb/aecp-aem-state.h"
-#include "../../module-avb/aecp.h"
+#include "../../module-avb/common/aecp-aem-state.h"
+#include "../../module-avb/common/aecp.h"
 #include "aecp-aem-helpers.h"
 #include "aecp-aem-types.h"
 
-#include "../../module-avb/aecp-aem-descriptors.h
+#include "../../module-avb/common/aecp-aem-descriptors.h"
 #include "aecp-aem-configuration.h"
 #include "aecp-aem-unsol-helper.h"
 

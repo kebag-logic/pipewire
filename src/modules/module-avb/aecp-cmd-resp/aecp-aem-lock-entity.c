@@ -6,8 +6,8 @@
 
 #include <limits.h>
 
-#include "../aecp-aem-state.h"
-#include "../descriptors.h"
+#include "../common/aecp-aem-state.h"
+#include "../common/descriptors.h"
 
 #include "aecp-aem-types.h"
 #include "aecp-aem-lock-entity.h"

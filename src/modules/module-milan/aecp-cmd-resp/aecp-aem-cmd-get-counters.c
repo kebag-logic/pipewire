@@ -4,11 +4,11 @@
 /* SPDX-License-Identifier: MIT  */
 
 
-#include "../../module-avb/aecp-aem-descriptors.h
-#include "../../module-avb/aecp.h"
-#include "../../module-avb/aecp-aem-counters.h"
-#include "../../module-avb/aecp-aem-state.h"
-#include "../../module-avb/utils.h"
+#include "../../module-avb/common/aecp-aem-descriptors.h"
+#include "../../module-avb/common/aecp.h"
+#include "../../module-avb/common/aecp-aem-counters.h"
+#include "../../module-avb/common/aecp-aem-state.h"
+#include "../../module-avb/common/utils.h"
 
 #include "aecp-aem-cmd-get-counters.h"
 #include "aecp-aem-helpers.h"

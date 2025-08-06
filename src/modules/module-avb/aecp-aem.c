@@ -8,9 +8,9 @@
 #include <limits.h>
 
 #include "aecp-aem.h"
-#include "aecp-aem-state.h"
-#include "aecp-aem-descriptors.h"
-#include "utils.h"
+#include "common/aecp-aem-state.h"
+#include "common/aecp-aem-descriptors.h"
+#include "common/utils.h"
 
 /** Below is the list of command handlers */
 #include "aecp-cmd-resp/aecp-aem-helpers.h"

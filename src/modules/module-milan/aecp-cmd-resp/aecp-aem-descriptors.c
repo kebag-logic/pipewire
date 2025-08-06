@@ -5,8 +5,8 @@
 /* SPDX-License-Identifier: MIT  */
 
 
-#include "../../module-avb/aecp-aem-state.h"
-#include "../../module-avb/descriptors.h"
+#include "../../module-avb/common/aecp-aem-state.h"
+#include "../../module-avb/common/descriptors.h"
 #include "aecp-aem-helpers.h"
 #include "aecp-aem-types.h"
 
