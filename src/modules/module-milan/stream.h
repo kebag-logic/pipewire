@@ -89,7 +89,7 @@ struct stream {
 
 #include "msrp.h"
 #include "mvrp.h"
-#include "maap.h"
+#include "../module-avb/maap.h"
 
 struct stream *server_create_stream(struct server *server,
 		enum spa_direction direction, uint16_t index);
