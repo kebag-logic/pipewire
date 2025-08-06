@@ -31,8 +31,8 @@
 #include "mmrp.h"
 #include "msrp.h"
 #include "mvrp.h"
-#include "aecp-state-vars.h"
 #include "../module-avb/descriptors.h"
+#include "../module-avb/aecp-state-vars.h"
 #include "utils.h"
 
 #define DEFAULT_INTERVAL_S	0
