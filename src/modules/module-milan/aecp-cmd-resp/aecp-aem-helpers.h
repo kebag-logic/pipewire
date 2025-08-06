@@ -8,7 +8,7 @@
 #define __AVB_AECP_AEM_HELPERS_H__
 
 
-#include "aecp-aem-types.h"
+#include "../../module-avb/common/aecp-aem-types.h"
 #include "../../module-avb/common/aecp-aem-state.h"
 #include "../../module-avb/common/aecp-aem.h"
 

@@ -12,7 +12,7 @@
 
 #include "aecp-aem-cmd-get-counters.h"
 #include "aecp-aem-helpers.h"
-#include "aecp-aem-types.h"
+#include "../../module-avb/common/aecp-aem-types.h"
 #include "aecp-aem-cmd-resp-common.h"
 #include "aecp-aem-unsol-helper.h"
 

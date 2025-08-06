@@ -6,7 +6,7 @@
 #include "../../module-avb/common/aecp-aem-state.h"
 #include "../../module-avb/common/descriptors.h"
 #include "aecp-aem-helpers.h"
-#include "aecp-aem-types.h"
+#include "../../module-avb/common/aecp-aem-types.h"
 
 #include "aecp-aem-available.h"
 

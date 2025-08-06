@@ -7,7 +7,7 @@
 #include "../common/aecp-aem-state.h"
 #include "../common/descriptors.h"
 #include "aecp-aem-helpers.h"
-#include "aecp-aem-types.h"
+#include "../common/aecp-aem-types.h"
 
 #include "aecp-aem-cmd-set-name.h"
 #include "aecp-aem-name-common.h"

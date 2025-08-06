@@ -8,7 +8,7 @@
 #define AVB_AEM_H
 
 #include "aecp.h"
-#include "aecp-cmd-resp/aecp-aem-types.h"
+#include "aecp-aem-types.h"
 #include "aecp-aem-counters.h"
 
 struct avb_packet_aecp_aem_acquire {

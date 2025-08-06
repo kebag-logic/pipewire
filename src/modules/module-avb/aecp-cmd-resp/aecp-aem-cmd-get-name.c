@@ -9,7 +9,7 @@
 #include "../common/aecp-aem-controls.h"
 
 #include "aecp-aem-helpers.h"
-#include "aecp-aem-types.h"
+#include "../common/aecp-aem-types.h"
 #include "aecp-aem-cmd-resp-common.h"
 #include "aecp-aem-cmd-get-name.h"
 

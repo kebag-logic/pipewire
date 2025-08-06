@@ -6,7 +6,7 @@
 #include "../common/aecp-aem-descriptors.h"
 #include "../common/aecp-aem-state.h"
 #include "aecp-aem-helpers.h"
-#include "aecp-aem-types.h"
+#include "../common/aecp-aem-types.h"
 
 #include "aecp-aem-cmd-set-clock-source.h"
 #include "aecp-aem-unsol-helper.h"

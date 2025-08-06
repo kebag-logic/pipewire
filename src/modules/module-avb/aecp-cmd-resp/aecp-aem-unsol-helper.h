@@ -11,7 +11,7 @@
 #include "../common/aecp-aem-state.h"
 #include "../common/aecp-aem.h"
 #include "../common/aecp.h"
-#include "aecp-aem-types.h"
+#include "../common/aecp-aem-types.h"
 
 #define AECP_AEM_MIN_PACKET_LENGTH AVB_PACKET_MIN_SIZE
 /**
