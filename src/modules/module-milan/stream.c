@@ -16,7 +16,7 @@
 #include <spa/pod/builder.h>
 #include <spa/param/audio/format-utils.h>
 
-#include "aaf.h"
+#include "../module-avb/aaf.h"
 #include "iec61883.h"
 #include "stream.h"
 #include "utils.h"
