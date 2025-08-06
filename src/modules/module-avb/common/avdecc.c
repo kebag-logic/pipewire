@@ -20,7 +20,6 @@
 
 #include <pipewire/pipewire.h>
 
-#include "avb.h"
 #include "packets.h"
 #include "internal.h"
 #include "stream.h"
