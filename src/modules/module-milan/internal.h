@@ -81,7 +81,7 @@ struct server {
 	struct avb_msrp_attribute *domain_attr;
 };
 
-#include "stream.h"
+#include "../module-avb/stream.h"
 
 static inline struct descriptor *server_find_descriptor(struct server *server,
 		uint16_t type, uint16_t index)

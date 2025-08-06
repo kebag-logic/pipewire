@@ -95,8 +95,12 @@ static int flush_write(struct stream *stream, uint64_t current_time)
 	int pdu_count;
 	ssize_t n;
 	struct avb_frame_header *h = (void*)stream->pdu;
+#ifdef USE_MILAN
+	struct avb_packet_aaf *p = SPA_PTROFF(h, sizeof(*h), void);
+#else
 	struct avb_packet_iec61883 *p = SPA_PTROFF(h, sizeof(*h), void);
 	uint8_t dbc;
+#endif
 
 	avail = spa_ringbuffer_get_read_index(&stream->ring, &index);
 
@@ -108,7 +112,9 @@ static int flush_write(struct stream *stream, uint64_t current_time)
 	// the t_uncertainty is 0 for now
 	txtime = stream->stream_start + stream->t_uncertainty;
 	ptime = txtime + stream->mtt;
+#ifndef USE_MILAN
 	dbc = stream->dbc;
+#endif
 
 	while (pdu_count--) {
 		*(uint64_t*)CMSG_DATA(stream->cmsg) = txtime;
@@ -123,7 +129,9 @@ static int flush_write(struct stream *stream, uint64_t current_time)
 		p->tv = 1;
 		// the timestamp is not 64 but 32 bit, there will be some head trunc
 		p->timestamp = htonl(ptime); // use to be ptime
+#ifndef USE_MILAN
 		p->dbc = dbc;
+#endif
 
 		n = sendmsg(stream->source->fd, &stream->msg, MSG_NOSIGNAL);
 		if (n < 0 || n != (ssize_t)stream->pdu_size) {
@@ -134,9 +142,13 @@ static int flush_write(struct stream *stream, uint64_t current_time)
 		ptime += stream->pdu_period;
 		index += stream->payload_size;
 		stream->stream_start += stream->pdu_period;
+#ifndef USE_MILAN
 		dbc += stream->frames_per_pdu;
+#endif
 	}
+#ifndef USE_MILAN
 	stream->dbc = dbc;
+#endif
 	spa_ringbuffer_read_update(&stream->ring, index);
 	return 0;
 }
@@ -190,7 +202,11 @@ static void setup_pdu(struct stream *stream)
 {
 	// This should be dependant on the AEM description of the stream.
 	struct avb_frame_header *h;
+#ifdef USE_MILAN
+	struct avb_packet_aaf *p;
+#else
 	struct avb_packet_iec61883 *p;
+#endif
 	ssize_t payload_size, hdr_size, pdu_size;
 
 	spa_memzero(stream->pdu, sizeof(stream->pdu));
@@ -210,6 +226,16 @@ static void setup_pdu(struct stream *stream)
 		p->sv = 1;
 		p->stream_id = htobe64(stream->id);
 
+#ifdef USE_MILAN
+		p->format = AVB_AAF_FORMAT_INT_32BIT;
+		p->nsr = AVB_AAF_PCM_NSR_48KHZ;
+		p->bit_depth = 32;
+		p->chan_per_frame = 8;
+		p->sp = 0;
+		p->event = 0;
+		p->seq_num = 0;
+		p->data_len = htons(payload_size);
+#else
 		p->tag = 0x1;
 		p->channel = 0x1f;
 		p->tcode = 0xa;
@@ -220,6 +246,7 @@ static void setup_pdu(struct stream *stream)
 		p->fdf = 0x2;
 		p->syt = htons(0x0008);
 		p->data_len = htons(payload_size+8);
+#endif
 	}
 	stream->hdr_size = hdr_size;
 	stream->payload_size = payload_size;
