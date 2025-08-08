@@ -193,7 +193,7 @@ static int handle_get_counters_stream_output(struct aecp *aecp, uint8_t *buf,
     return rc;
 }
 
-int fill_counters_and_validity_bits(struct aecp *aecp, uint8_t *buf, uint16_t desc_id,
+static int fill_counters_and_validity_bits(struct aecp *aecp, uint8_t *buf, uint16_t desc_id,
         uint16_t desc_type)
 {
     int rc = 0;

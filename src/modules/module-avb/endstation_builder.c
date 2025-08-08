@@ -190,6 +190,27 @@ static void *es_builder_desc_stream_input(struct server *server, uint16_t type,
     return ptr_alloc;
 }
 
+// Milan vXXXXX Clock Domain
+static void *es_builder_desc_clock_domain(struct server *server, uint16_t type,
+            uint16_t index, size_t size, void *ptr)
+{
+    struct aecp_aem_clock_domain_state clock;
+    void *ptr_alloc;
+
+    // For now it only supports the IDENTIFY
+    memcpy(&clock.desc, ptr, size);
+    ptr_alloc = server_add_descriptor(server, type, index, sizeof(clock),
+                                       &clock);
+
+    if (!ptr_alloc) {
+        pw_log_error("Error durring allocation\n");
+        spa_assert(0);
+    }
+
+    return ptr_alloc;
+}
+
+
 // Milan v1.2 5.3.12 Identify
 static void *es_builder_desc_control(struct server *server, uint16_t type,
             uint16_t index, size_t size, void *ptr)
@@ -223,6 +244,7 @@ static struct es_builder_st es_builder[AVB_AEM_DESC_MAX_17221] =
     HELPER_ES_BUIDLER(AVB_AEM_DESC_AVB_INTERFACE, es_builder_desc_avb_interface),
     HELPER_ES_BUIDLER(AVB_AEM_DESC_STREAM_OUTPUT, es_builder_desc_stream_output),
     HELPER_ES_BUIDLER(AVB_AEM_DESC_STREAM_INPUT, es_builder_desc_stream_input),
+    HELPER_ES_BUIDLER(AVB_AEM_DESC_CLOCK_DOMAIN, es_builder_desc_clock_domain),
 
     HELPER_ES_BUIDLER(AVB_AEM_DESC_CONTROL, es_builder_desc_control),
 

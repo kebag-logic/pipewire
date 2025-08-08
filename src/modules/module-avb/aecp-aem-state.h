@@ -118,9 +118,6 @@ struct aecp_aem_configuration_state {
  */
 struct aecp_aem_desc_base {
     struct aecp_aem_base_info base_info;
-    // TODO clean, config_index is held in the descriptor.
-    uint16_t config_index;
-    void *desc;
 };
 
 /**
@@ -191,6 +188,10 @@ struct aecp_aem_avb_interface_state {
     uint32_t unlocked;
 };
 
+ struct aecp_aem_clock_domain_state {
+    struct aecp_aem_counter_clock_domain_state counters;
+    struct avb_aem_desc_clock_domain desc;
+ };
 /**
  * Milan v1.2 Table 5.16: GET_COUNTERS Stream Input counters
  */
@@ -228,7 +229,7 @@ struct aecp_aem_counter_stream_output_state {
 };
 
 struct aecp_aem_stream_output_state {
-    struct aecp_aem_counter_stream_input_state counters;
+    struct aecp_aem_counter_stream_output_state counters;
     struct stream stream;
     struct avb_aem_desc_stream desc;
 };
