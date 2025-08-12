@@ -57,7 +57,7 @@ sudo "$SCRIPT_DIR/prepare-traffic-shaper.sh" "$AVB_INTERFACE"
 sudo "$SCRIPT_DIR/setup-vlan.sh" "$AVB_INTERFACE"
 
 # # Start with verbose logging
-# /usr/bin/pipewire-avb -v
+# /usr/bin/pipewire-milan -v
 
 # # Restart pipewire
-# systemctl --user restart pipewire-avb.service
+# systemctl --user restart pipewire.service
