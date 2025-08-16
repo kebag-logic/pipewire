@@ -55,9 +55,3 @@ sudo setcap cap_net_raw,cap_net_admin,cap_dac_override+eip /usr/bin/pipewire
 # Prepare the i210 interface
 sudo "$SCRIPT_DIR/prepare-traffic-shaper.sh" "$AVB_INTERFACE"
 sudo "$SCRIPT_DIR/setup-vlan.sh" "$AVB_INTERFACE"
-
-# # Start with verbose logging
-# /usr/bin/pipewire-milan -v
-
-# # Restart pipewire
-# systemctl --user restart pipewire.service

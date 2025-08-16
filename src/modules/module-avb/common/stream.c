@@ -200,7 +200,7 @@ static void on_sink_stream_process(void *data)
 
 static void setup_pdu(struct stream *stream)
 {
-	// This should be dependant on the AEM description of the stream.
+	// TODO: This should be dependant on the AEM description of the stream.
 	struct avb_frame_header *h;
 #ifdef USE_MILAN
 	struct avb_packet_aaf *p;

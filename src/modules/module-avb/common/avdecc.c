@@ -165,15 +165,6 @@ int avb_server_make_socket(struct server *server, uint16_t type, const uint8_t m
 	}
 	memcpy(server->mac_addr, req.ifr_hwaddr.sa_data, sizeof(server->mac_addr));
 
-	// server->entity_id = (uint64_t)server->mac_addr[0] << 56 |
-	// 		(uint64_t)server->mac_addr[1] << 48 |
-	// 		(uint64_t)server->mac_addr[2] << 40 |
-	// 		(uint64_t)0xff << 32 |
-	// 		(uint64_t)0xfe << 24 |
-	// 		(uint64_t)server->mac_addr[3] << 16 |
-	// 		(uint64_t)server->mac_addr[4] << 8 |
-	// 		(uint64_t)server->mac_addr[5];
-
 	// TODO: Replaced MAC Address witht static value.
 	server->entity_id = (uint64_t)DSC_ENTITY_MODEL_ENTITY_ID;
 
