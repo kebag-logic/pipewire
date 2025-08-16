@@ -1,24 +1,18 @@
 /* AVB support */
 /* SPDX-FileCopyrightText: Copyright © 2022 Wim Taymans */
-/* SPDX-FileCopyrightText: Copyright © 2025 Kebag-Logic */
-/* SPDX-FileCopyrightText: Copyright © 2025 Alex Malki <alexandre.malki@kebag-logic.com> */
-/* SPDX-FileCopyrightText: Copyright © 2025 Simon Gapp <simon.gapp@kebag-logic.com> */
 /* SPDX-License-Identifier: MIT */
 
 #include <spa/utils/json.h>
 #include <spa/debug/mem.h>
 
 #include <pipewire/pipewire.h>
-#include <limits.h>
 
 #include "common/acmp.h"
 #include "common/msrp.h"
 #include "common/internal.h"
 #include "common/stream.h"
-#include "common/aecp-aem.h"
 
 static const uint8_t mac[6] = AVB_BROADCAST_MAC;
-
 
 struct pending {
 	struct spa_list link;
@@ -85,7 +79,6 @@ struct acmp {
 #define STREAM_TALKER_FSM 1
 	struct spa_list stream_fsm[2];
 	uint16_t sequence_id[3];
-
 };
 
 static struct fsm_state_listener *acmp_fsm_find(struct acmp *acmp, int type, uint64_t id)
@@ -133,9 +126,8 @@ static void *stream_listener_fsm_new(struct acmp *acmp, uint32_t type)
 
 	return p;
 }
-
-static void *pending_new(struct acmp *acmp, uint32_t type, uint64_t now,
-	uint32_t timeout_ms, const void *m, size_t size)
+static void *pending_new(struct acmp *acmp, uint32_t type, uint64_t now, uint32_t timeout_ms,
+		const void *m, size_t size)
 {
 	struct pending *p;
 	struct avb_ethernet_header *h;
@@ -160,8 +152,7 @@ static void *pending_new(struct acmp *acmp, uint32_t type, uint64_t now,
 	return p->ptr;
 }
 
-static struct pending *pending_find(struct acmp *acmp, uint32_t type,
-	uint16_t sequence_id)
+static struct pending *pending_find(struct acmp *acmp, uint32_t type, uint16_t sequence_id)
 {
 	struct pending *p;
 	spa_list_for_each(p, &acmp->pending[type], link)
@@ -182,8 +173,7 @@ struct msg_info {
 	int (*handle) (struct acmp *acmp, uint64_t now, const void *m, int len);
 };
 
-static int reply_not_supported(struct acmp *acmp, uint8_t type,
-	 const void *m, int len)
+static int reply_not_supported(struct acmp *acmp, uint8_t type, const void *m, int len)
 {
 	struct server *server = acmp->server;
 	uint8_t buf[len];
@@ -206,11 +196,10 @@ static int retry_pending(struct acmp *acmp, uint64_t now, struct pending *p)
 	return avb_server_send_packet(server, h->dest, AVB_TSN_ETH, p->ptr, p->size);
 }
 
-static int handle_connect_tx_command(struct acmp *acmp, uint64_t now,
-	 const void *m, int len)
+static int handle_connect_tx_command(struct acmp *acmp, uint64_t now, const void *m, int len)
 {
 	struct server *server = acmp->server;
-	uint8_t buf[256];
+	uint8_t buf[len];
 	struct avb_ethernet_header *h = (void*)buf;
 	struct avb_packet_acmp *reply = SPA_PTROFF(h, sizeof(*h), void);
 	const struct avb_packet_acmp *p = SPA_PTROFF(m, sizeof(*h), void);
@@ -230,8 +219,7 @@ static int handle_connect_tx_command(struct acmp *acmp, uint64_t now,
 
 	// Milan V1.2 5.5.4.1
 
-	AVB_PACKET_ACMP_SET_MESSAGE_TYPE(reply,
-		AVB_ACMP_MESSAGE_TYPE_CONNECT_TX_RESPONSE);
+	AVB_PACKET_ACMP_SET_MESSAGE_TYPE(reply, AVB_ACMP_MESSAGE_TYPE_CONNECT_TX_RESPONSE);
 	reply->stream_id = htobe64(stream->id);
 
 	stream_activate(stream, now);
@@ -247,12 +235,10 @@ done:
 
 /* IEEE 1722.1-2021, Sec. 8.1.1. Connecting a Stream */
 /* Milan v1.2, Sec. 5.5.2.4 Controller Bind, RCV_PROBE_TX_RESP */
-static int handle_connect_tx_response(struct acmp *acmp,
-	uint64_t now, const void *m, int len)
+static int handle_connect_tx_response(struct acmp *acmp, uint64_t now, const void *m, int len)
 {
-	uint8_t buf[256];
 	struct server *server = acmp->server;
-	struct avb_ethernet_header *h = (struct avb_ethernet_header *)buf;
+	struct avb_ethernet_header *h;
 	const struct avb_packet_acmp *resp = SPA_PTROFF(m, sizeof(*h), void);
 	struct avb_packet_acmp *reply;
 	struct pending *pending;
@@ -260,8 +246,6 @@ static int handle_connect_tx_response(struct acmp *acmp,
 	struct stream *stream;
 	int res;
 
-
-	memcpy(buf, m, len);
 	if (be64toh(resp->listener_guid) != server->entity_id)
 		return 0;
 
@@ -277,8 +261,7 @@ static int handle_connect_tx_response(struct acmp *acmp,
 
 	reply = SPA_PTROFF(h, sizeof(*h), void);
 	reply->sequence_id = htons(pending->old_sequence_id);
-	AVB_PACKET_ACMP_SET_MESSAGE_TYPE(reply,
-		AVB_ACMP_MESSAGE_TYPE_CONNECT_RX_RESPONSE);
+	AVB_PACKET_ACMP_SET_MESSAGE_TYPE(reply, AVB_ACMP_MESSAGE_TYPE_CONNECT_RX_RESPONSE);
 
 	stream = server_find_stream(server, SPA_DIRECTION_INPUT,
 			ntohs(reply->listener_unique_id));
@@ -296,8 +279,7 @@ static int handle_connect_tx_response(struct acmp *acmp,
 	return res;
 }
 
-static int handle_disconnect_tx_command(struct acmp *acmp, uint64_t now,
-	const void *m, int len)
+static int handle_disconnect_tx_command(struct acmp *acmp, uint64_t now, const void *m, int len)
 {
 	struct server *server = acmp->server;
 	uint8_t buf[len];
@@ -307,10 +289,10 @@ static int handle_disconnect_tx_command(struct acmp *acmp, uint64_t now,
 	int status = AVB_ACMP_STATUS_SUCCESS;
 	struct stream *stream;
 
-	memcpy(buf, m, len);
 	if (be64toh(p->talker_guid) != server->entity_id)
 		return 0;
 
+	memcpy(buf, m, len);
 	stream = server_find_stream(server, SPA_DIRECTION_OUTPUT,
 			reply->talker_unique_id);
 	if (stream == NULL) {
@@ -318,8 +300,7 @@ static int handle_disconnect_tx_command(struct acmp *acmp, uint64_t now,
 		goto done;
 	}
 
-	AVB_PACKET_ACMP_SET_MESSAGE_TYPE(reply,
-		AVB_ACMP_MESSAGE_TYPE_DISCONNECT_TX_RESPONSE);
+	AVB_PACKET_ACMP_SET_MESSAGE_TYPE(reply, AVB_ACMP_MESSAGE_TYPE_DISCONNECT_TX_RESPONSE);
 
 	stream_deactivate(stream, now);
 
@@ -328,12 +309,10 @@ done:
 	return avb_server_send_packet(server, h->dest, AVB_TSN_ETH, buf, len);
 }
 
-static int handle_disconnect_tx_response(struct acmp *acmp, uint64_t now,
-	const void *m, int len)
+static int handle_disconnect_tx_response(struct acmp *acmp, uint64_t now, const void *m, int len)
 {
-	uint8_t buf[256];
 	struct server *server = acmp->server;
-	struct avb_ethernet_header *h = (struct avb_ethernet_header *) buf;
+	struct avb_ethernet_header *h;
 	struct avb_packet_acmp *reply;
 	const struct avb_packet_acmp *resp = SPA_PTROFF(m, sizeof(*h), void);
 	struct pending *pending;
@@ -341,7 +320,6 @@ static int handle_disconnect_tx_response(struct acmp *acmp, uint64_t now,
 	struct stream *stream;
 	int res;
 
-	memcpy(buf, m, len);
 	if (be64toh(resp->talker_guid) != server->entity_id)
 		return 0;
 
@@ -358,8 +336,7 @@ static int handle_disconnect_tx_response(struct acmp *acmp, uint64_t now,
 
 	reply = SPA_PTROFF(h, sizeof(*h), void);
 	reply->sequence_id = htons(pending->old_sequence_id);
-	AVB_PACKET_ACMP_SET_MESSAGE_TYPE(reply,
-		AVB_ACMP_MESSAGE_TYPE_DISCONNECT_RX_RESPONSE);
+	AVB_PACKET_ACMP_SET_MESSAGE_TYPE(reply, AVB_ACMP_MESSAGE_TYPE_DISCONNECT_RX_RESPONSE);
 
 	stream = server_find_stream(server, SPA_DIRECTION_INPUT,
 			reply->listener_unique_id);
@@ -377,69 +354,44 @@ static int handle_disconnect_tx_response(struct acmp *acmp, uint64_t now,
 
 /* IEEE 1722.1-2021, Sec. 8.1.1. Connecting a Stream */
 /* Milan v1.2, Sec. 5.5.2.4 Controller Bind, RCV_BIND_RX_CMD */
-// TODO: On the reception of the first bind_rx_cmd, '
-// 			the packet is not processed. Why?
-static int handle_connect_rx_command(struct acmp *acmp, uint64_t now,
-	const void *m, int len)
+static int handle_connect_rx_command(struct acmp *acmp, uint64_t now, const void *m, int len)
 {
-	uint8_t buf[512];
 	struct server *server = acmp->server;
-	struct avb_ethernet_header *h = (struct avb_ethernet_header *)buf;
+	struct avb_ethernet_header *h;
 	const struct avb_packet_acmp *p = SPA_PTROFF(m, sizeof(*h), void);
 	struct avb_packet_acmp *cmd;
-	struct avb_packet_acmp *reply;
-	int res;
-	uint16_t flags;
-
-	memcpy(buf, m, len);
-	pw_log_info("HANDLE: len: %i", len);
-	if (be64toh(p->listener_guid) != server->entity_id)
-		return 0;
-
-	pw_log_warn("%s", __func__);
-
-
 
 	if (be64toh(p->listener_guid) != server->entity_id)
 		return 0;
-
-	// TODO: Check if entity is locked and respond with CONTROLLER_NOT_AUTHORIZED
-
 
 	h = pending_new(acmp, PENDING_TALKER, now,
-		AVB_ACMP_TIMEOUT_CONNECT_TX_COMMAND_MS, m, len);
+			AVB_ACMP_TIMEOUT_CONNECT_TX_COMMAND_MS, m, len);
 	if (h == NULL)
-	return -errno;
+		return -errno;
 
 	cmd = SPA_PTROFF(h, sizeof(*h), void);
-
-	// TODO: Continue here
-	AVB_PACKET_ACMP_SET_MESSAGE_TYPE(cmd,
-			AVB_ACMP_MESSAGE_TYPE_CONNECT_TX_COMMAND);
-
+	AVB_PACKET_ACMP_SET_MESSAGE_TYPE(cmd, AVB_ACMP_MESSAGE_TYPE_CONNECT_TX_COMMAND);
 	AVB_PACKET_ACMP_SET_STATUS(cmd, AVB_ACMP_STATUS_SUCCESS);
 
 	return avb_server_send_packet(server, h->dest, AVB_TSN_ETH, h, len);
 }
 
-static int handle_ignore(struct acmp *acmp, uint64_t now,
-	const void *m, int len)
+static int handle_ignore(struct acmp *acmp, uint64_t now, const void *m, int len)
 {
 	return 0;
 }
 
 /* IEEE 1722.1-2021, Sec. 8.1.2. Disconnecting a Stream */
 /** Milan v1.2 Sec. 5.5.2.2 UNBIND_RX_COMMAND */
-static int handle_disconnect_rx_command(struct acmp *acmp, uint64_t now,
-	const void *m, int len)
+static int handle_disconnect_rx_command(struct acmp *acmp, uint64_t now, const void *m, int len)
 {
-	const struct avb_ethernet_header *h = m;
+	struct server *server = acmp->server;
+	struct avb_ethernet_header *h;
 	const struct avb_packet_acmp *p = SPA_PTROFF(m, sizeof(*h), void);
-	struct avb_packet_acmp *reply;
-	int res;
-	uint16_t flags;
+	struct avb_packet_acmp *cmd;
 
-	pw_log_info("HANDLE: len: %i", len);
+	if (be64toh(p->listener_guid) != server->entity_id)
+		return 0;
 
 	h = pending_new(acmp, PENDING_TALKER, now,
 			AVB_ACMP_TIMEOUT_DISCONNECT_TX_COMMAND_MS, m, len);
@@ -449,9 +401,8 @@ static int handle_disconnect_rx_command(struct acmp *acmp, uint64_t now,
 	cmd = SPA_PTROFF(h, sizeof(*h), void);
 	AVB_PACKET_ACMP_SET_MESSAGE_TYPE(cmd, AVB_ACMP_MESSAGE_TYPE_DISCONNECT_TX_COMMAND);
 	AVB_PACKET_ACMP_SET_STATUS(cmd, AVB_ACMP_STATUS_SUCCESS);
-	return avb_server_send_packet(server, h->dest, AVB_TSN_ETH, h, len);
-	return 0;
 
+	return avb_server_send_packet(server, h->dest, AVB_TSN_ETH, h, len);
 }
 
 static const struct msg_info msg_info[] = {
@@ -536,7 +487,6 @@ static void check_timeout(struct acmp *acmp, uint64_t now, uint16_t type)
 			pending_free(acmp, p);
 		}
 	}
-	}
 }
 static void acmp_periodic(void *data, uint64_t now)
 {
@@ -544,7 +494,6 @@ static void acmp_periodic(void *data, uint64_t now)
 	check_timeout(acmp, now, PENDING_TALKER);
 	check_timeout(acmp, now, PENDING_LISTENER);
 	check_timeout(acmp, now, PENDING_CONTROLLER);
-
 }
 
 static int do_help(struct acmp *acmp, const char *args, FILE *out)
@@ -556,8 +505,7 @@ static int do_help(struct acmp *acmp, const char *args, FILE *out)
 	return 0;
 }
 
-static int acmp_command(void *data, uint64_t now, const char *command,
-	const char *args, FILE *out)
+static int acmp_command(void *data, uint64_t now, const char *command, const char *args, FILE *out)
 {
 	struct acmp *acmp = data;
 	int res;
@@ -596,8 +544,7 @@ struct avb_acmp *avb_acmp_register(struct server *server)
 	spa_list_init(&acmp->pending[PENDING_LISTENER]);
 	spa_list_init(&acmp->pending[PENDING_CONTROLLER]);
 
-	avdecc_server_add_listener(server, &acmp->server_listener,
-							    &server_events, acmp);
+	avdecc_server_add_listener(server, &acmp->server_listener, &server_events, acmp);
 
 	return (struct avb_acmp*)acmp;
 }
