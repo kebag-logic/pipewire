@@ -148,11 +148,6 @@ struct aecp_aem_stream_format_state {
 };
 
 /** To keep track of the unsolicited notifications */
-struct aecp_aem_clock_domain_state {
-    struct aecp_aem_desc_base base_desc;
-};
-
-/** To keep track of the unsolicited notifications */
 struct aecp_aem_sampling_rate_state {
     struct aecp_aem_desc_base base_desc;
 };
