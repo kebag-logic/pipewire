@@ -1,5 +1,6 @@
 /* PipeWire */
 /* SPDX-FileCopyrightText: Copyright © 2022 Wim Taymans */
+/* SPDX-FileCopyrightText: Copyright © 2025 Nils Tonnaett */
 /* SPDX-License-Identifier: MIT */
 
 #include <string.h>
