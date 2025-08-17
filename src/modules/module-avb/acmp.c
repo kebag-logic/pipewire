@@ -24,47 +24,6 @@ struct pending {
 	size_t size;
 	void *ptr;
 };
-struct fsm_state_talker {
-	struct spa_list link;
-
-	uint64_t stream_id;
-	enum milan_acmp_talker_sta current_state;
-	int64_t timeout;
-	size_t size;
-	void *ptr;
-};
-
-struct fsm_binding_parameters {
-	uint32_t status;
-	uint64_t controller_entity_id;
-	uint64_t talker_entity_id;
-	uint64_t listener_entity_id;
-
-	uint16_t talker_unique_id;
-	uint16_t listener_unique_id;
-
-	uint16_t sequence_id;
-
-	uint64_t stream_id;
-	char stream_dest_mac[6];
-	uint8_t stream_vlan_id;
-};
-
-struct fsm_state_listener {
-	struct spa_list link;
-
-	struct fsm_binding_parameters binding_parameters;
-
-	enum milan_acmp_listener_sta current_state;
-	int64_t timeout;
-	size_t size;
-	uint16_t flags;
-	uint8_t probing_status;
-	uint16_t connection_count;
-	uint8_t STREAMING_WAIT;
-	uint8_t buf[2048];
-
-};
 
 struct acmp {
 	struct server *server;
@@ -74,58 +33,9 @@ struct acmp {
 #define PENDING_LISTENER	1
 #define PENDING_CONTROLLER	2
 	struct spa_list pending[3];
-
-#define STREAM_LISTENER_FSM 0
-#define STREAM_TALKER_FSM 1
-	struct spa_list stream_fsm[2];
 	uint16_t sequence_id[3];
 };
 
-static struct fsm_state_listener *acmp_fsm_find(struct acmp *acmp, int type, uint64_t id)
-{
-	struct fsm_state_listener *fsm;
-	spa_list_for_each(fsm, &acmp->stream_fsm[type], link) {
-		if (fsm->binding_parameters.stream_id == id )
-			return fsm;
-	}
-
-	return NULL;
-}
-
-
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunused-function"
-static void *stream_talker_fsm_new(struct acmp *acmp, uint32_t type,
-	uint64_t now, uint32_t timeout_ms, const void *m, size_t size)
-{
-	struct fsm_state_talker *p;
-
-	p = calloc(1, sizeof(*p) + size);
-	if (p == NULL)
-		return NULL;
-
-	p->timeout = now + (timeout_ms * SPA_NSEC_PER_MSEC);
-	p->size = size;
-
-	spa_list_append(&acmp->stream_fsm[type], &p->link);
-}
-#pragma GCC diagnostic pop
-
-static void *stream_listener_fsm_new(struct acmp *acmp, uint32_t type)
-{
-	struct fsm_state_listener *p;
-
-	p = calloc(1, sizeof(*p));
-	if (p == NULL)
-		return NULL;
-
-	// TODO: Is this the correct init status?
-	p->probing_status = AVB_MILAN_ACMP_STATUS_PROBING_DISABLED;
-
-	spa_list_append(&acmp->stream_fsm[type], &p->link);
-
-	return p;
-}
 static void *pending_new(struct acmp *acmp, uint32_t type, uint64_t now, uint32_t timeout_ms,
 		const void *m, size_t size)
 {
