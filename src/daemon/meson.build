@@ -73,6 +73,7 @@ conf_files = [
  'minimal.conf',
  'pipewire-pulse.conf',
  'pipewire-avb.conf',
+ 'pipewire-milan.conf',
  'pipewire-aes67.conf',
 ]
 
@@ -115,6 +116,7 @@ ln = find_program('ln')
 pipewire_aliases = [
   'pipewire-pulse',
   'pipewire-avb',
+  'pipewire-milan',
   'pipewire-aes67',
 ]
 

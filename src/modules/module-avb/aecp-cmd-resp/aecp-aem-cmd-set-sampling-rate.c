@@ -3,10 +3,10 @@
 /* SPDX-FileCopyrightText: Copyright © 2025 Alex Malki <alexandre.malki@kebag-logic.com> */
 /* SPDX-License-Identifier: MIT  */
 
-#include "../aecp-aem-state.h"
-#include "../descriptors.h"
+#include "../common/aecp-aem-state.h"
+#include "../common/descriptors.h"
 #include "aecp-aem-helpers.h"
-#include "aecp-aem-types.h"
+#include "../common/aecp-aem-types.h"
 #include "aecp-aem-unsol-helper.h"
 #include "aecp-aem-cmd-set-sampling-rate.h"
 

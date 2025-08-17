@@ -3,12 +3,12 @@
 /* SPDX-FileCopyrightText: Copyright © 2025 Alex Malki <alexandre.malki@kebag-logic.com> */
 /* SPDX-License-Identifier: MIT  */
 
-#include "../aecp-aem-state.h"
-#include "../aecp.h"
+#include "../common/aecp-aem-state.h"
+#include "../common/aecp.h"
 #include "aecp-aem-helpers.h"
-#include "aecp-aem-types.h"
+#include "../common/aecp-aem-types.h"
 
-#include "../aecp-aem-descriptors.h"
+#include "../common/aecp-aem-descriptors.h"
 #include "aecp-aem-configuration.h"
 #include "aecp-aem-unsol-helper.h"
 
@@ -41,63 +41,7 @@ int handle_cmd_set_configuration(struct aecp *aecp, int64_t now, const void *m, 
 	* a different controller, and it shall also not change its current configuration by non-ATDECC
 	* means (proprietary remote control software, front-panel, ...).
 	*/
-#ifdef USE_MILAN
-	/** WARNING! Milan forces only one entity */
-	desc = server_find_descriptor(server, AVB_AEM_DESC_ENTITY, 0);
-	if (desc == NULL)
-		return reply_status(aecp, AVB_AECP_AEM_STATUS_NO_SUCH_DESCRIPTOR, p, len);
-
-	// TODO maybe avoid copy here
-	memcpy(buf, m, len);
-	h_reply = (struct avb_ethernet_header *)buf;
-	p_reply = SPA_PTROFF(h_reply, sizeof(*h_reply), void);
-
-	cfg = (struct avb_packet_aecp_aem_setget_configuration *) p_reply->payload;
-	entity_desc = (struct avb_aem_desc_entity*) desc->ptr;
-	cur_cfg_id = ntohs(entity_desc->current_configuration);
-	req_cfg_id = ntohs(cfg->configuration_index);
-	cfg_count = ntohs(entity_desc->configurations_count);
-
-	if (aecp_aem_get_state_var(aecp, htobe64(p->aecp.target_guid),
-									aecp_aem_configuration, 0, &cfg_state)) {
-		return reply_not_supported(aecp, m, len);
-	}
-
-	if (entity_desc->entity_id != p->aecp.target_guid) {
-		pw_log_error("invalid entity id\n");
-		has_failed = true;
-	// TODO: req_cfg_id is zero based, cfg_count is not. Should be req_cfg_id >= cfg_count
-	} else if (req_cfg_id >= cfg_count) {
-		pw_log_error("requested %u, but has max %u id\n", req_cfg_id, cfg_count);
-		has_failed = true;
-	} else if (req_cfg_id == cur_cfg_id) {
-		pw_log_warn("requested %u and same current %u id\n", req_cfg_id,
-					 cur_cfg_id);
-		has_failed = true;
-	} else {
-		entity_desc->current_configuration = cfg->configuration_index;
-		has_failed = false;
-	}
-
-	/*
-	* Always contains the current value,
-	* that is itcontains the new value if the command succeeds or the old
-	* value if it fails.
-	*/
-	if (has_failed) {
-		cfg->configuration_index = entity_desc->current_configuration;
-	} else {
-		cfg_state.cfg_idx = ntohs(entity_desc->current_configuration);
-
-		// Unsolicited preparation
-		aecp_aem_set_state_var(aecp, aecp->server->entity_id,
-				htobe64(p->aecp.controller_guid), aecp_aem_configuration, 0,
-				&cfg_state);
-	}
-    return reply_success(aecp, buf, len);
-#else
 	return reply_not_implemented(aecp, m, len);
-#endif // USE_MILAN
 }
 
 int handle_unsol_set_configuration(struct aecp *aecp, int64_t now)

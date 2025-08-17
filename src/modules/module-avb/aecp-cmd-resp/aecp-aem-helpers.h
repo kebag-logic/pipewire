@@ -8,9 +8,9 @@
 #define __AVB_AECP_AEM_HELPERS_H__
 
 
-#include "aecp-aem-types.h"
-#include "../aecp-aem-state.h"
-#include "../aecp-aem.h"
+#include "../common/aecp-aem-types.h"
+#include "../common/aecp-aem-state.h"
+#include "../common/aecp-aem.h"
 
 static inline int reply_status(struct aecp *aecp, int status, const void *m, int len)
 {

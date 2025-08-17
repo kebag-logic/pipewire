@@ -1,4 +1,9 @@
 #!/bin/bash
+
+# SPDX-FileCopyrightText: Copyright © 2022 Kebag-Logic
+# SPDX-FileCopyrightText: Copyright © 2025 Simon Gapp <simon.gapp@kebag-logic.com>
+# SPDX-License-Identifier: MIT
+
 set -euo pipefail
 
 # Determine script location and set project root
@@ -55,9 +60,3 @@ sudo setcap cap_net_raw,cap_net_admin,cap_dac_override+eip /usr/bin/pipewire
 # Prepare the i210 interface
 sudo "$SCRIPT_DIR/prepare-traffic-shaper.sh" "$AVB_INTERFACE"
 sudo "$SCRIPT_DIR/setup-vlan.sh" "$AVB_INTERFACE"
-
-# # Start with verbose logging
-# /usr/bin/pipewire-avb -v
-
-# # Restart pipewire
-# systemctl --user restart pipewire-avb.service

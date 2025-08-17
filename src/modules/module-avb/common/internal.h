@@ -5,8 +5,6 @@
 #ifndef AVB_INTERNAL_H
 #define AVB_INTERNAL_H
 
-#define USE_MILAN  1
-
 #ifdef __cplusplus
 extern "C" {
 #endif

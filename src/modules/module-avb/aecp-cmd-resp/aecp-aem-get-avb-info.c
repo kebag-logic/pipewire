@@ -4,9 +4,9 @@
 /* SPDX-FileCopyrightText: Copyright © 2025 Alex Malki <alexandre.malki@kebag-logic.com> */
 /* SPDX-License-Identifier: MIT  */
 
-#include "../descriptors.h"
+#include "../common/descriptors.h"
 #include "aecp-aem-helpers.h"
-#include "aecp-aem-types.h"
+#include "../common/aecp-aem-types.h"
 
 #include "aecp-aem-descriptors.h"
 

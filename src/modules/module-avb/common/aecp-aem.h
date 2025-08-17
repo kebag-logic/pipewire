@@ -8,7 +8,7 @@
 #define AVB_AEM_H
 
 #include "aecp.h"
-#include "aecp-cmd-resp/aecp-aem-types.h"
+#include "aecp-aem-types.h"
 #include "aecp-aem-counters.h"
 
 struct avb_packet_aecp_aem_acquire {
@@ -255,7 +255,6 @@ struct avb_packet_aecp_aem {
 	uint8_t payload[0];
 } __attribute__ ((__packed__));
 
-#ifdef USE_MILAN
 
 #define AECP_AVB_VENDOR_UNIQUE_PROTOCOL_ID_MILAN (0x001BC50AC100ULL)
 
@@ -273,7 +272,6 @@ struct avb_packet_aecp_milan_vendor_unique {
 	uint8_t payload[0];
 } __attribute__ ((__packed__));
 
-#endif
 
 #define AVB_PACKET_AEM_SET_COMMAND_TYPE(p,v)		((p)->cmd1 = ((v) >> 8),(p)->cmd2 = (v))
 

@@ -20,7 +20,6 @@
 
 #include <pipewire/pipewire.h>
 
-#include "avb.h"
 #include "packets.h"
 #include "internal.h"
 #include "stream.h"
@@ -37,11 +36,12 @@
 #include "descriptors.h"
 
 #define DEFAULT_INTERVAL_S	0
-#if USE_MILAN
-	// Milan ACMP timeouts are at 200ms
-	#define DEFAULT_INTERVAL_NS 100000000
+
+#ifdef USE_MILAN
+// Milan ACMP timeouts are at 200ms
+#define DEFAULT_INTERVAL_NS 100000000
 #else
-	#define DEFAULT_INTERVAL_NS	500000000
+#define DEFAULT_INTERVAL_NS 500000000
 #endif
 
 #define server_emit(s,m,v,...) spa_hook_list_call(&s->listener_list, struct server_events, m, v, ##__VA_ARGS__)
@@ -164,15 +164,6 @@ int avb_server_make_socket(struct server *server, uint16_t type, const uint8_t m
 		goto error_close;
 	}
 	memcpy(server->mac_addr, req.ifr_hwaddr.sa_data, sizeof(server->mac_addr));
-
-	// server->entity_id = (uint64_t)server->mac_addr[0] << 56 |
-	// 		(uint64_t)server->mac_addr[1] << 48 |
-	// 		(uint64_t)server->mac_addr[2] << 40 |
-	// 		(uint64_t)0xff << 32 |
-	// 		(uint64_t)0xfe << 24 |
-	// 		(uint64_t)server->mac_addr[3] << 16 |
-	// 		(uint64_t)server->mac_addr[4] << 8 |
-	// 		(uint64_t)server->mac_addr[5];
 
 	// TODO: Replaced MAC Address witht static value.
 	server->entity_id = (uint64_t)DSC_ENTITY_MODEL_ENTITY_ID;

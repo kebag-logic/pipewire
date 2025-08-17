@@ -112,8 +112,7 @@ static int flush_write(struct stream *stream, uint64_t current_time)
 	// the t_uncertainty is 0 for now
 	txtime = stream->stream_start + stream->t_uncertainty;
 	ptime = txtime + stream->mtt;
-#ifdef USE_MILAN
-#else
+#ifndef USE_MILAN
 	dbc = stream->dbc;
 #endif
 
@@ -130,10 +129,9 @@ static int flush_write(struct stream *stream, uint64_t current_time)
 		p->tv = 1;
 		// the timestamp is not 64 but 32 bit, there will be some head trunc
 		p->timestamp = htonl(ptime); // use to be ptime
-#ifdef USE_MILAN
-#else
+#ifndef USE_MILAN
 		p->dbc = dbc;
-#endif // USE_MILAN
+#endif
 
 		n = sendmsg(stream->source->fd, &stream->msg, MSG_NOSIGNAL);
 		if (n < 0 || n != (ssize_t)stream->pdu_size) {
@@ -144,15 +142,13 @@ static int flush_write(struct stream *stream, uint64_t current_time)
 		ptime += stream->pdu_period;
 		index += stream->payload_size;
 		stream->stream_start += stream->pdu_period;
-#ifdef USE_MILAN
-#else
+#ifndef USE_MILAN
 		dbc += stream->frames_per_pdu;
 #endif
 	}
-#ifdef USE_MILAN
-#else
+#ifndef USE_MILAN
 	stream->dbc = dbc;
-#endif // USE_MILAN
+#endif
 	spa_ringbuffer_read_update(&stream->ring, index);
 	return 0;
 }
@@ -204,7 +200,7 @@ static void on_sink_stream_process(void *data)
 
 static void setup_pdu(struct stream *stream)
 {
-	// This should be dependant on the AEM description of the stream.
+	// TODO: This should be dependant on the AEM description of the stream.
 	struct avb_frame_header *h;
 #ifdef USE_MILAN
 	struct avb_packet_aaf *p;
