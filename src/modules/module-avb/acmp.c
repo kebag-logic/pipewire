@@ -320,7 +320,7 @@ static int handle_disconnect_tx_response(struct acmp *acmp, uint64_t now, const 
 	struct stream *stream;
 	int res;
 
-	if (be64toh(resp->talker_guid) != server->entity_id)
+	if (be64toh(resp->listener_guid) != server->entity_id)
 		return 0;
 
 	pw_log_warn("%s", __func__);
