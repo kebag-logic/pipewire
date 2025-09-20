@@ -20,6 +20,8 @@ static inline int reply_status(struct aecp *aecp, int status, const void *m, int
 	struct avb_packet_aecp_header *reply = SPA_PTROFF(h, sizeof(*h), void);
 
 	memcpy(buf, m, len);
+	pw_log_warn("status %u\n", h->type);
+
 	AVB_PACKET_AECP_SET_MESSAGE_TYPE(reply, AVB_AECP_MESSAGE_TYPE_AEM_RESPONSE);
 	AVB_PACKET_AECP_SET_STATUS(reply, status);
 
@@ -28,11 +30,13 @@ static inline int reply_status(struct aecp *aecp, int status, const void *m, int
 
 static inline int reply_not_implemented(struct aecp *aecp, const void *m, int len)
 {
+	pw_log_warn("reply not implementing");
 	return reply_status(aecp, AVB_AECP_AEM_STATUS_NOT_IMPLEMENTED, m, len);
 }
 
 static inline int reply_not_supported(struct aecp *aecp, const void *m, int len)
 {
+	pw_log_warn("reply not supported");
 	return reply_status(aecp, AVB_AECP_AEM_STATUS_NOT_SUPPORTED, m, len);
 }
 
@@ -87,6 +91,8 @@ static inline int reply_bad_arguments(struct aecp *aecp, const void *m, int len)
 
 static inline int reply_success(struct aecp *aecp, const void *m, int len)
 {
+
+	pw_log_warn("reply OK");
 	return reply_status(aecp, AVB_AECP_AEM_STATUS_SUCCESS, m, len);
 }
 

@@ -10,6 +10,7 @@
 
 #include "adp.h"
 #include "aecp-aem-descriptors.h"
+#include "aecp-aem-state.h"
 #include "internal.h"
 #include "utils.h"
 

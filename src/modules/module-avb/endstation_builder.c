@@ -19,7 +19,6 @@ static void *es_builder_desc_entity(struct server *server, uint16_t type,
     void *ptr_alloc;
 
     memcpy(&entity_state.desc, ptr, size);
-
     entity_state.lock_state.base_info.expire_timeout = LONG_MAX;
     for (unsigned int unsol_index = 0; unsol_index < AECP_AEM_MILAN_MAX_CONTROLLER;
             unsol_index++) {
@@ -84,7 +83,7 @@ static void *es_builder_desc_stream_output(struct server *server, uint16_t type,
     // Milan v1.2 Clause 5.3.7.7 Diagnostic conunters:
     // Stream start / Stream Stop / Media Reset / Timestamp_Uncertain
     // Frames TX
-    struct aecp_aem_stream_output_state stream_output = { 0 };
+    struct aecp_aem_stream_output_state *pstream_output, stream_output = { 0 };
     void *ptr_alloc;
 
     memcpy(&stream_output.desc, ptr, size);
@@ -101,22 +100,23 @@ static void *es_builder_desc_stream_output(struct server *server, uint16_t type,
     // the stream module initiate the ACMP state machine. However there would be
     // a cyclic dependency.
 
-    if (server_create_stream(server, &stream_output.stream, SPA_DIRECTION_OUTPUT,
-            index)) {
-        pw_log_error("Could not create the OUTPUT stream");
-        spa_assert(0);
-    }
-
-    if (avb_acmp_register_talker(server, &stream_output.stream)){
-        pw_log_error("Could not register the ACMP talker");
-        spa_assert(0);
-    }
-
     ptr_alloc = server_add_descriptor(server, type, index, sizeof(stream_output),
                                       &stream_output);
 
     if (!ptr_alloc) {
         pw_log_error("Error durring allocation\n");
+        spa_assert(0);
+    }
+
+    pstream_output = ptr_alloc;
+    if (!server_create_stream(server, &pstream_output->stream, SPA_DIRECTION_OUTPUT,
+            index)) {
+        pw_log_error("Could not create the OUTPUT stream");
+        spa_assert(0);
+    }
+
+    if (avb_acmp_register_talker(server, &pstream_output->stream)){
+        pw_log_error("Could not register the ACMP talker");
         spa_assert(0);
     }
 
@@ -154,7 +154,7 @@ static void *es_builder_desc_stream_input(struct server *server, uint16_t type,
     // Media Lock / Media Unlock / Stream interrupted / SEQ_NUM_Mismatch
     // Media reset / Timestamp Uncertain / Unspported format / Late Timestamp
     // Early Timestamp / Frames RX
-    struct aecp_aem_stream_input_state stream_input = { 0 };
+    struct aecp_aem_stream_input_state *pstream_input, stream_input = { 0 };
     void *ptr_alloc;
 
     memcpy(&stream_input.desc, ptr, size);
@@ -168,22 +168,23 @@ static void *es_builder_desc_stream_input(struct server *server, uint16_t type,
     // the stream module initiate the ACMP state machine. However there would be
     // a cyclic dependency.
 
-    if (server_create_stream(server, &stream_input.stream, SPA_DIRECTION_INPUT,
-            index)) {
-        pw_log_error("Could not create the INPUT stream");
-        spa_assert(0);
-    }
-
-    if (avb_acmp_register_listener(server, &stream_input.stream)){
-        pw_log_error("Could not register the listener");
-        spa_assert(0);
-    }
-
     ptr_alloc = server_add_descriptor(server, type, index, sizeof(stream_input),
                                        &stream_input);
 
     if (!ptr_alloc) {
         pw_log_error("Error durring allocation\n");
+        spa_assert(0);
+    }
+
+    pstream_input = ptr_alloc;
+    if (!server_create_stream(server, &pstream_input->stream, SPA_DIRECTION_INPUT,
+            index)) {
+        pw_log_error("Could not create the INPUT stream");
+        spa_assert(0);
+    }
+
+    if (avb_acmp_register_listener(server, &pstream_input->stream)){
+        pw_log_error("Could not register the listener");
         spa_assert(0);
     }
 
@@ -218,8 +219,6 @@ static void *es_builder_desc_control(struct server *server, uint16_t type,
     struct aecp_aem_control_state control;
     void *ptr_alloc;
 
-    // For now it only supports the IDENTIFY
-    memcpy(&control.desc, ptr, size);
     ptr_alloc = server_add_descriptor(server, type, index, sizeof(control),
                                        &control);
 
@@ -245,20 +244,26 @@ static struct es_builder_st es_builder[AVB_AEM_DESC_MAX_17221] =
     HELPER_ES_BUIDLER(AVB_AEM_DESC_STREAM_OUTPUT, es_builder_desc_stream_output),
     HELPER_ES_BUIDLER(AVB_AEM_DESC_STREAM_INPUT, es_builder_desc_stream_input),
     HELPER_ES_BUIDLER(AVB_AEM_DESC_CLOCK_DOMAIN, es_builder_desc_clock_domain),
-
     HELPER_ES_BUIDLER(AVB_AEM_DESC_CONTROL, es_builder_desc_control),
 
 };
 
 
 int endstation_builder_add_descriptor(struct server *server, uint16_t type,
-     uint16_t index, size_t size, void *ptr)
+     uint16_t index, size_t size, void *ptr_aem)
 {
+    void *desc_ptr;
+    struct descriptor *d;
     // TODO
     // 1. create a builder for each of the different type of descriptor
     // 2. Then add it to the server
     // 3. For streams, make sure to get the information of the MRP on a per
     // stream basis.
+
+    if (!server) {
+        pw_log_error("Invalid server, it is empty %p\n", server);
+        spa_assert(0);
+    }
 
     if (type >= AVB_AEM_DESC_MAX_17221) {
         pw_log_error("Invalid Type %u\n", type);
@@ -266,17 +271,20 @@ int endstation_builder_add_descriptor(struct server *server, uint16_t type,
     }
 
     if (!es_builder[type].build_descriptor_cb) {
-        if(!server_add_descriptor(server, type, index, size, ptr)) {
+        if(!server_add_descriptor(server, type, index, size, ptr_aem)) {
             pw_log_error("Could not allocate descriptor %u at index %u the avb"
                          " aem type\n", type, index);
             spa_assert(0);
         }
-    }
-
-    if (es_builder[type].build_descriptor_cb(server, type, index, size, ptr)) {
-            pw_log_error("Could not allocate specific descriptr %u at index %u"
-                         " the avb aem type\n",  type, index);
-            spa_assert(0);
+    } else {
+        desc_ptr = es_builder[type].build_descriptor_cb(server, type, index, size, ptr_aem);
+        if (!desc_ptr) {
+                pw_log_error("Could not allocate specific descriptr %u at index %u"
+                            " the avb aem type\n",  type, index);
+                spa_assert(0);
+        }
+        d = (struct descriptor *) desc_ptr;
+        d->size = size;
     }
 
     return 0;

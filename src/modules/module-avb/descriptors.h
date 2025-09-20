@@ -20,6 +20,10 @@
 
 static inline void init_descriptors(struct server *server)
 {
+	if (!server) {
+		pw_log_error("Invalid server for initialiasation of the descriptor");
+		spa_assert(0);
+	}
 	// TODO PERSISTENCE: retrieve the saved buffers.
 	/**************************************************************************************/
 	/* IEEE 1722.1-2021, Sec. 7.2.12 - STRINGS Descriptor
@@ -33,7 +37,8 @@ static inline void init_descriptors(struct server *server)
 		.string_1 = DSC_STRINGS_1_CONFIGURATION_NAME,
 		.string_2 = DSC_STRINGS_2_MANUFACTURER_NAME,
 		.string_3 = DSC_STRINGS_3_GROUP_NAME
-	});
+	}
+	);
 
 	/**************************************************************************************/
 	/* IEEE 1722.1-2021, Sec. 7.2.11 - LOCALE Descriptor */

@@ -391,6 +391,7 @@ int avb_aecp_aem_handle_command(struct aecp *aecp, const void *m, int len)
 	struct timespec ts_now;
 	int64_t now;
 
+	pw_log_error("*wrong log error\n");
 	/**
 	 * Time is always using the monotonic time
 	 */
@@ -405,7 +406,7 @@ int avb_aecp_aem_handle_command(struct aecp *aecp, const void *m, int len)
 	if (info == NULL)
 		return reply_not_implemented(aecp, m, len);
 
-	pw_log_info("aem command %s %ld", info->name, now);
+	pw_log_warn("aem command %s %ld", info->name, now);
 
 	if (info->handle_command == NULL)
 		return reply_not_implemented(aecp, m, len);

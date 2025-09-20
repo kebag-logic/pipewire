@@ -59,7 +59,7 @@ int handle_cmd_register_unsol_notifications(struct aecp *aecp, int64_t now,
 	unsol->port_id = 0;
 	unsol->next_seq_id = 0;
 
-	pw_log_info("Unsolicited notification registration for 0x%lx", controller_id);
+	pw_log_warn("Unsolicited notification registration for 0x%lx", controller_id);
 
 	return reply_success(aecp, m, len);
 #else

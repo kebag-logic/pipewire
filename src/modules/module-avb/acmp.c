@@ -1454,6 +1454,11 @@ static void check_timeout(struct acmp *acmp, uint64_t now, uint16_t type)
                 spa_assert(0);
         }
 
+        if (!cmd->state_handler) {
+            pw_log_warn("No state handler\n");
+            return;
+        }
+
         rc = cmd->state_handler(acmp, p, NULL, 0, now);
         if (rc) {
             pw_log_error("Timers issues\n");

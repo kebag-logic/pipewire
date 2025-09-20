@@ -20,6 +20,8 @@ int handle_cmd_read_descriptor(struct aecp *aecp, int64_t now, const void *m, in
 	const struct avb_packet_aecp_aem *p = SPA_PTROFF(h, sizeof(*h), void);
 	struct avb_packet_aecp_aem *reply;
 	const struct avb_packet_aecp_aem_read_descriptor *rd;
+	/** More details in the entity builder */
+	struct aecp_aem_entity_state entity_state;
 	uint16_t desc_type, desc_id;
 	const struct descriptor *desc;
 	uint8_t buf[2048];

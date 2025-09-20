@@ -205,7 +205,7 @@ static int fill_counters_and_validity_bits(struct aecp *aecp, uint8_t *buf,
             rc = handle_get_counters_stream_output(aecp, buf, desc);
         break;
         default:
-        pw_log_warn("not suppoorted get Counter for desc type %d\n",
+        pw_log_warn("not supported get Counter for desc type %d\n",
                      desc_type);
         // All validity bit set to zero
             memset(buf, 0, sizeof(uint32_t));

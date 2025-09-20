@@ -103,9 +103,10 @@ struct aecp_aem_unsol_notification_state {
 
 #define AECP_AEM_MILAN_MAX_CONTROLLER 16
 struct aecp_aem_entity_state {
+    struct avb_aem_desc_entity desc;
+
     struct aecp_aem_lock_state lock_state;
     struct aecp_aem_unsol_notification_state unsol_notif_state[AECP_AEM_MILAN_MAX_CONTROLLER];
-    struct avb_aem_desc_entity desc;
 };
 
 struct aecp_aem_configuration_state {
@@ -127,10 +128,18 @@ struct aecp_aem_desc {
     struct aecp_aem_desc_base base_desc;
 };
 
+/**  Maximum Counts for Values Type Table 7-39 , 1722.1-2021 */
+// Limiting ourself to 1 as we are MILAN compliant
+#define AECP_AEM_MILAN_MAX_CONTROLS 1
+
 /** The control information to keep track of the latest changes */
 struct aecp_aem_control_state {
-    struct aecp_aem_desc_base base;
     struct avb_aem_desc_control desc;
+    // FIXME: Leave it statically allcoated, memory is cheap, but dynamically
+    // allocate in the future
+    struct avb_aem_desc_value_format value_inf[AECP_AEM_MILAN_MAX_CONTROLS];
+
+    struct aecp_aem_desc_base base;
 };
 
 /**
@@ -169,8 +178,8 @@ struct aecp_aem_counter_avb_interface_state {
 };
 
 struct aecp_aem_avb_interface_state {
-    struct aecp_aem_counter_avb_interface_state counters;
     struct avb_aem_desc_avb_interface desc;
+    struct aecp_aem_counter_avb_interface_state counters;
 };
 
 /**
@@ -183,9 +192,15 @@ struct aecp_aem_avb_interface_state {
     uint32_t unlocked;
 };
 
+/**  Maximum Counts for Values Type Table 7-61 , 1722.1-2021 --> 216 */
+/** FIXME do allocation!!! */
+#define AECP_AEM_MILAN_MAX_CLOCK_SOURCES 128
+
  struct aecp_aem_clock_domain_state {
-    struct aecp_aem_counter_clock_domain_state counters;
     struct avb_aem_desc_clock_domain desc;
+    uint16_t clock_sources[AECP_AEM_MILAN_MAX_CLOCK_SOURCES];
+
+    struct aecp_aem_counter_clock_domain_state counters;
  };
 /**
  * Milan v1.2 Table 5.16: GET_COUNTERS Stream Input counters
@@ -205,10 +220,17 @@ struct aecp_aem_counter_stream_input_state {
     uint32_t frame_rx;
 };
 
+/**  Maximum Counts for Values Type Table 7-8 , 1722.1-2021 --> 46 */
+/**  But Milan v1.2 says 5 */
+#define AECP_AEM_MILAN_MAX_FORMAT 5
 struct aecp_aem_stream_input_state {
+    struct avb_aem_desc_stream desc;
+// FIXME: Leave it statically allcoated, memory is cheap, but dynamically
+// allocate in the future
+    uint32_t stream_formats[AECP_AEM_MILAN_MAX_FORMAT];
+
     struct aecp_aem_counter_stream_input_state counters;
     struct stream stream;
-    struct avb_aem_desc_stream desc;
 };
 
 /**
@@ -224,9 +246,13 @@ struct aecp_aem_counter_stream_output_state {
 };
 
 struct aecp_aem_stream_output_state {
+    struct avb_aem_desc_stream desc;
+    // FIXME: Leave it statically allcoated, memory is cheap, but dynamically
+    // allocate in the future
+    uint32_t stream_formats[AECP_AEM_MILAN_MAX_FORMAT];
+
     struct aecp_aem_counter_stream_output_state counters;
     struct stream stream;
-    struct avb_aem_desc_stream desc;
 };
 
 static inline int aecp_aem_request_unsollicted_notifications(

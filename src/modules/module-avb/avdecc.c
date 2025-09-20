@@ -94,7 +94,7 @@ int avb_server_send_packet(struct server *server, const uint8_t dest[6],
 
 	if (send(server->source->fd, data, size, 0) < 0) {
 		res = -errno;
-		pw_log_warn("got send error: %m");
+		pw_log_warn("packet size %ld, got send error:  %m", size);
 	}
 	return res;
 }
