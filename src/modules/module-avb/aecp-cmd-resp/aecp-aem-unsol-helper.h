@@ -32,7 +32,7 @@ static inline int reply_unsol_send(struct aecp *aecp, uint64_t controller_id,
 		pw_log_error("Could not find the ENTITY descriptor 0\n");
 		return -1;
 	}
-	entity_state = (struct aecp_aem_entity_state *) desc;
+	entity_state = (struct aecp_aem_entity_state *) desc->ptr;
 	h = (struct avb_ethernet_header*) packet;
 	p = SPA_PTROFF(h, sizeof(*h), void);
 
