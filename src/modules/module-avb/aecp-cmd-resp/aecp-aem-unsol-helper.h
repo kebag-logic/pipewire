@@ -20,7 +20,7 @@ static inline int reply_unsol_send(struct aecp *aecp, uint64_t controller_id,
 	void *packet, size_t len, bool internal)
 {
     uint16_t ctrler_index;
-	int rc;
+	int rc = 0;
 	struct avb_ethernet_header *h;
 	struct avb_packet_aecp_aem *p;
 	struct aecp_aem_entity_state *entity_state;
@@ -36,34 +36,35 @@ static inline int reply_unsol_send(struct aecp *aecp, uint64_t controller_id,
 	h = (struct avb_ethernet_header*) packet;
 	p = SPA_PTROFF(h, sizeof(*h), void);
 
+	unsol_state = entity_state->unsol_notif_state;
 		// Loop through all the unsol entities.
 	for (ctrler_index = 0;
 			ctrler_index < ARRAY_SIZE(entity_state->unsol_notif_state);
 		 	ctrler_index++)
 	{
-		unsol_state = &entity_state->unsol_notif_state[ctrler_index];
-		if (!unsol_state->is_registered) {
-			pw_log_info("Not registered\n");
+		if (!unsol_state[ctrler_index].is_registered) {
+			pw_log_info("Not registered %d\n", ctrler_index);
 			continue;
 		}
 
-		if ((controller_id == unsol_state->ctrler_endity_id) && !internal) {
+		if ((controller_id == unsol_state[ctrler_index].ctrler_endity_id) && !internal) {
 			/* Do not send unsolicited if that the one creating the udpate, and
 				this is not a timeout.*/
 			pw_log_info("Do not send twice of %lx %lx\n", controller_id,
-				unsol_state->ctrler_endity_id );
+				unsol_state[ctrler_index].ctrler_endity_id );
 			continue;
 		}
 
-		p->aecp.controller_guid = htobe64(unsol_state->ctrler_endity_id);
-		p->aecp.sequence_id = htons(unsol_state->next_seq_id);
+		p->aecp.controller_guid = htobe64(unsol_state[ctrler_index].ctrler_endity_id);
+		p->aecp.sequence_id = htons(unsol_state[ctrler_index].next_seq_id);
 
-		unsol_state->next_seq_id++;
-		rc = avb_server_send_packet(aecp->server, unsol_state->ctrler_mac_addr,
+		unsol_state[ctrler_index].next_seq_id++;
+		pw_log_warn(" pointer is %p", &unsol_state[ctrler_index]);
+		rc = avb_server_send_packet(aecp->server, unsol_state[ctrler_index].ctrler_mac_addr,
                 AVB_TSN_ETH, packet, len);
 
 		if (rc) {
-			pw_log_error("while sending packet to %lx\n", unsol_state->ctrler_endity_id);
+			pw_log_error("while sending packet to %lx\n", unsol_state[ctrler_index].ctrler_endity_id);
 			return rc;
 		}
 	}

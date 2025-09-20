@@ -34,8 +34,8 @@ int handle_cmd_register_unsol_notifications(struct aecp *aecp, int64_t now,
 	for (index = 0; index < AECP_AEM_UNSOL_NOTIFICATION_REG_CONTROLLER_MAX;
 				index++)  {
 
-		if ((unsol->ctrler_endity_id == controller_id) &&
-				unsol->is_registered) {
+		if ((unsol[index].ctrler_endity_id == controller_id) &&
+				unsol[index].is_registered) {
 			pw_log_warn("controller 0x%lx, already registered\n", controller_id);
 			return reply_success(aecp, m, len);
 		}
@@ -44,7 +44,7 @@ int handle_cmd_register_unsol_notifications(struct aecp *aecp, int64_t now,
 	for (index = 0; index < AECP_AEM_UNSOL_NOTIFICATION_REG_CONTROLLER_MAX;
 				index++)  {
 
-		if (!unsol->is_registered) {
+		if (!unsol[index].is_registered) {
 			break;
 		}
 	}
@@ -53,14 +53,14 @@ int handle_cmd_register_unsol_notifications(struct aecp *aecp, int64_t now,
 		return reply_no_resources(aecp, m, len);
 	}
 
-	unsol->ctrler_endity_id = controller_id;
-	memcpy(unsol->ctrler_mac_addr, h->src, sizeof(h->src));
-	unsol->is_registered = true;
-	unsol->port_id = 0;
-	unsol->next_seq_id = 0;
+	unsol[index].ctrler_endity_id = controller_id;
+	memcpy(&unsol[index].ctrler_mac_addr, h->src, sizeof(h->src));
+	unsol[index].is_registered = true;
+	unsol[index].port_id = 0;
+	unsol[index].next_seq_id = 0;
 
 	pw_log_warn("Unsolicited notification registration for 0x%lx", controller_id);
-
+	pw_log_warn(" pointer is %p", &unsol[index]);
 	return reply_success(aecp, m, len);
 #else
 		return reply_not_implemented(aecp, m, len);
@@ -92,8 +92,8 @@ int handle_cmd_deregister_unsol_notifications(struct aecp *aecp,
 	for (index = 0; index < AECP_AEM_UNSOL_NOTIFICATION_REG_CONTROLLER_MAX;
 				index++)  {
 
-		if ((unsol->ctrler_endity_id == controller_id) &&
-				unsol->is_registered) {
+		if ((unsol[index].ctrler_endity_id == controller_id) &&
+				unsol[index].is_registered) {
 			break;
 		}
 	}
@@ -105,11 +105,11 @@ int handle_cmd_deregister_unsol_notifications(struct aecp *aecp,
 		return reply_success(aecp, m, len);
 	}
 
-	unsol->ctrler_endity_id = 0;
-	memset(unsol->ctrler_mac_addr, 0, sizeof(unsol->ctrler_mac_addr));
-	unsol->is_registered = false;
-	unsol->port_id = 0;
-	unsol->next_seq_id = 0;
+	unsol[index].ctrler_endity_id = 0;
+	memset(&unsol[index].ctrler_mac_addr, 0, sizeof(unsol[index].ctrler_mac_addr));
+	unsol[index].is_registered = false;
+	unsol[index].port_id = 0;
+	unsol[index].next_seq_id = 0;
 
 	pw_log_info("unsol de-registration for 0x%lx at idx=%d", controller_id, index);
 
