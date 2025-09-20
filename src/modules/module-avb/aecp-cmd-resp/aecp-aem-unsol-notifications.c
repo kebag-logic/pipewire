@@ -54,7 +54,7 @@ int handle_cmd_register_unsol_notifications(struct aecp *aecp, int64_t now,
 	}
 
 	unsol[index].ctrler_endity_id = controller_id;
-	memcpy(&unsol[index].ctrler_mac_addr, h->src, sizeof(h->src));
+	memcpy(unsol[index].ctrler_mac_addr, h->src, sizeof(h->src));
 	unsol[index].is_registered = true;
 	unsol[index].port_id = 0;
 	unsol[index].next_seq_id = 0;
@@ -98,7 +98,7 @@ int handle_cmd_deregister_unsol_notifications(struct aecp *aecp,
 		}
 	}
 
-	// Never made it to the list
+	// Never made it into the list
 	if (index == AECP_AEM_UNSOL_NOTIFICATION_REG_CONTROLLER_MAX) {
 		pw_log_warn("Controller %lx never made it the registrered list\n",
 					 controller_id);
@@ -106,7 +106,7 @@ int handle_cmd_deregister_unsol_notifications(struct aecp *aecp,
 	}
 
 	unsol[index].ctrler_endity_id = 0;
-	memset(&unsol[index].ctrler_mac_addr, 0, sizeof(unsol[index].ctrler_mac_addr));
+	memset(unsol[index].ctrler_mac_addr, 0, sizeof(unsol[index].ctrler_mac_addr));
 	unsol[index].is_registered = false;
 	unsol[index].port_id = 0;
 	unsol[index].next_seq_id = 0;

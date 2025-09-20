@@ -57,8 +57,18 @@ struct acmp {
 static struct fsm_state_listener *acmp_fsm_find(struct acmp *acmp, int type, uint64_t id)
 {
     struct fsm_state_listener *fsm;
+    struct stream *strm;
+
     spa_list_for_each(fsm, &acmp->stream_fsm[type], link) {
-        if (fsm->binding_parameters.stream_id == id )
+        if (type == FSM_STREAM_LISTENER) {
+            strm = SPA_CONTAINER_OF(fsm, struct stream, acmp_state_listener);
+        } else if (type == FSM_STREAM_TALKER) {
+            strm = SPA_CONTAINER_OF(fsm, struct stream, acmp_state_talker);
+        } else {
+            spa_assert(0);
+        }
+        pw_log_warn("stream_id 0x%x vs 0x%lx\n",  strm->index, id);
+        if (strm->index == id )
             return fsm;
     }
 
@@ -1043,7 +1053,7 @@ static int handle_connect_tx_response(struct acmp *acmp,
     memcpy(buf, m, len);
 
     fsm = acmp_fsm_find(acmp, STREAM_LISTENER_FSM,
-        be64toh(resp->listener_guid));
+                be64toh(resp->listener_unique_id));
 
     // At this state there should be a state machine from the rcv_bind_rx_cmd
     if (!fsm) {
@@ -1212,7 +1222,7 @@ static int handle_connect_rx_command(struct acmp *acmp, uint64_t now,
     (void) cmd;
     const struct listener_fsm_cmd *fcmd;
     struct fsm_state_listener *fsm = acmp_fsm_find(acmp, STREAM_LISTENER_FSM,
-                                                    be64toh(p->listener_guid));
+                                                    be64toh(p->listener_unique_id));
 
     int evt = AECP_MILAN_ACMP_EVT_RCV_BIND_RX_CMD;
 
@@ -1283,7 +1293,7 @@ static int handle_disconnect_rx_command(struct acmp *acmp, uint64_t now,
     (void) flags;
     const struct listener_fsm_cmd *fcmd;
     struct fsm_state_listener *fsm = acmp_fsm_find(acmp, STREAM_LISTENER_FSM,
-        be64toh(p->listener_guid));
+        be64toh(p->listener_unique_id));
 
     (void)reply;
     res = 0;
@@ -1536,8 +1546,8 @@ static int acmp_register_stream(struct server *server, struct stream *stream,
             acmp_fsm_listener->probing_status = AVB_MILAN_ACMP_STATUS_PROBING_DISABLED;
             link = &acmp_fsm_listener->link;
 
-            // Initialize the new FSM state // TODO use container of.
-            acmp_fsm_listener->binding_parameters.stream_id = stream->id;
+
+            //acmp_fsm_listener->binding_parameters.stream_id = stream->id;
             // TODO
             acmp_fsm_listener->current_state = MILAN_ACMP_LISTENER_STA_UNBOUND;
             acmp_fsm_listener->timeout = LONG_MAX;

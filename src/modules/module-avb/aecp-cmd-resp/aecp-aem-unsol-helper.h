@@ -42,6 +42,8 @@ static inline int reply_unsol_send(struct aecp *aecp, uint64_t controller_id,
 			ctrler_index < ARRAY_SIZE(entity_state->unsol_notif_state);
 		 	ctrler_index++)
 	{
+		pw_log_warn("Base pointer is %p", &entity_state->unsol_notif_state);
+		pw_log_warn("pointer unso %p", &unsol_state[ctrler_index]);
 		if (!unsol_state[ctrler_index].is_registered) {
 			pw_log_info("Not registered %d\n", ctrler_index);
 			continue;
