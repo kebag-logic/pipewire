@@ -5,6 +5,7 @@
 #include "adp.h"
 #include "aecp-aem.h"
 #include "aecp-aem-descriptors.h"
+#include "entity-model.h"
 #include "internal.h"
 
 static inline void init_descriptors(struct server *server)
@@ -220,20 +221,19 @@ static inline void init_descriptors(struct server *server)
 			sizeof(stream_output_0), &stream_output_0);
 
 	struct avb_aem_desc_avb_interface avb_interface = {
-		.localized_description = htons(0xffff),
-		.interface_flags = htons(
-				AVB_AEM_DESC_AVB_INTERFACE_FLAG_GPTP_GRANDMASTER_SUPPORTED),
-		.clock_identity = htobe64(0),
-		.priority1 = 0,
-		.clock_class = 0,
-		.offset_scaled_log_variance = htons(0),
-		.clock_accuracy = 0,
-		.priority2 = 0,
-		.domain_number = 0,
-		.log_sync_interval = 0,
-		.log_announce_interval = 0,
-		.log_pdelay_interval = 0,
-		.port_number = 0,
+		.localized_description = htons(DSC_AVB_INTERFACE_LOCALIZED_DESCRIPTION),
+		.interface_flags = htons(DSC_AVB_INTERFACE_INTERFACE_FLAGS),
+		.clock_identity = htobe64(DSC_AVB_INTERFACE_CLOCK_IDENTITY),
+		.priority1 = DSC_AVB_INTERFACE_PRIORITY1,
+		.clock_class = DSC_AVB_INTERFACE_CLOCK_CLASS,
+		.offset_scaled_log_variance = htons(DSC_AVB_INTERFACE_OFFSET_SCALED_LOG_VARIANCE),
+		.clock_accuracy = DSC_AVB_INTERFACE_CLOCK_ACCURACY,
+		.priority2 = DSC_AVB_INTERFACE_PRIORITY2,
+		.domain_number = DSC_AVB_INTERFACE_DOMAIN_NUMBER,
+		.log_sync_interval = DSC_AVB_INTERFACE_LOG_SYNC_INTERVAL,
+		.log_announce_interval = DSC_AVB_INTERFACE_LOG_ANNOUNCE_INTERVAL,
+		.log_pdelay_interval = DSC_AVB_INTERFACE_PDELAY_INTERVAL,
+		.port_number = DSC_AVB_INTERFACE_PORT_NUMBER,
 	};
 	strncpy(avb_interface.object_name, server->ifname, 63);
 	memcpy(avb_interface.mac_address, server->mac_addr, 6);
