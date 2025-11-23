@@ -40,6 +40,21 @@ static int parse_frac(struct pw_properties *props, const char *key,
 	return 0;
 }
 
+static void create_stream_timeout(void *user_data)
+{
+	struct stream *stream = user_data;
+
+	if (stream->create_tag != SPA_ID_INVALID) {
+		pw_log_warn("[%s] timeout on stream %p channel:%d", stream->client->name, stream, stream->channel);
+
+		/* Don't try to signal anything to the client, it's already killed the stream on its end */
+		stream->drain_tag = 0;
+		stream->killed = false;
+
+		stream_free(stream);
+	}
+}
+
 struct stream *stream_new(struct client *client, enum stream_type type, uint32_t create_tag,
 			  const struct sample_spec *ss, const struct channel_map *map,
 			  const struct buffer_attr *attr)
@@ -89,6 +104,11 @@ struct stream *stream_new(struct client *client, enum stream_type type, uint32_t
 		spa_assert_not_reached();
 	}
 
+	/* Time out if we don't get a link and can't send a reply to create in 35s. Client will time out in
+	 * 30s and clean up its stream anyway. */
+	pw_timer_queue_add(stream->impl->timer_queue, &stream->timer, NULL,
+			35 * SPA_NSEC_PER_SEC, create_stream_timeout, stream);
+
 	return stream;
 
 error_errno:
@@ -99,12 +119,23 @@ error_errno:
 	return NULL;
 }
 
+void stream_created(struct stream *stream)
+{
+	struct client *client = stream->client;
+	pw_log_debug("client %p: stream %p channel:%d", client, stream, stream->channel);
+
+	stream->create_tag = SPA_ID_INVALID;
+	pw_timer_queue_cancel(&stream->timer);
+}
+
 void stream_free(struct stream *stream)
 {
 	struct client *client = stream->client;
 	struct impl *impl = client->impl;
 
 	pw_log_debug("client %p: stream %p channel:%d", client, stream, stream->channel);
+
+	pw_timer_queue_cancel(&stream->timer);
 
 	if (stream->drain_tag)
 		reply_error(client, -1, stream->drain_tag, -ENOENT);
@@ -118,7 +149,7 @@ void stream_free(struct stream *stream)
 
 		/* force processing of all pending messages before we destroy
 		 * the stream */
-		pw_loop_invoke(impl->loop, NULL, 0, NULL, 0, false, client);
+		pw_loop_invoke(impl->main_loop, NULL, 0, NULL, 0, false, client);
 
 		pw_stream_destroy(stream->stream);
 	}
@@ -309,6 +340,31 @@ int stream_send_started(struct stream *stream)
 		TAG_U32, COMMAND_STARTED,
 		TAG_U32, -1,
 		TAG_U32, stream->channel,
+		TAG_INVALID);
+
+	return client_queue_message(client, reply);
+}
+
+int stream_send_suspended(struct stream *stream, bool suspended)
+{
+	struct client *client = stream->client;
+	struct impl *impl = client->impl;
+	struct message *reply;
+	uint32_t command;
+
+	pw_log_debug("client %p [%s]: stream %p SUSPENDED %d channel:%u",
+		     client, client->name, stream, suspended, stream->channel);
+
+	command = stream->direction == PW_DIRECTION_OUTPUT ?
+		COMMAND_PLAYBACK_STREAM_SUSPENDED :
+		COMMAND_RECORD_STREAM_SUSPENDED;
+
+	reply = message_alloc(impl, -1, 0);
+	message_put(reply,
+		TAG_U32, command,
+		TAG_U32, -1,
+		TAG_U32, stream->channel,
+		TAG_BOOLEAN, suspended,
 		TAG_INVALID);
 
 	return client_queue_message(client, reply);

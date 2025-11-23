@@ -12,6 +12,8 @@
 
 #include "format.h"
 
+#define MAX_CHANNELS	SPA_AUDIO_MAX_CHANNELS
+
 static const struct format audio_formats[] = {
 	[SAMPLE_U8] = { SAMPLE_U8, SPA_AUDIO_FORMAT_U8, "u8", 1 },
 	[SAMPLE_ALAW] = { SAMPLE_ALAW, SPA_AUDIO_FORMAT_ALAW, "alaw", 1 },
@@ -296,9 +298,9 @@ uint32_t channel_pa2id(enum channel_position channel)
 	return audio_channels[channel].channel;
 }
 
-const char *channel_id2name(uint32_t channel)
+const char *channel_id2name(uint32_t channel, char *buf, size_t size)
 {
-	return spa_type_audio_channel_to_short_name(channel);
+	return spa_type_audio_channel_make_short_name(channel, buf, size, "UNK");
 }
 
 uint32_t channel_name2id(const char *name)
@@ -346,9 +348,9 @@ uint32_t channel_paname2id(const char *name, size_t size)
 }
 
 
-void channel_map_to_positions(const struct channel_map *map, uint32_t *pos)
+void channel_map_to_positions(const struct channel_map *map, uint32_t *pos, uint32_t max_pos)
 {
-	uint32_t i, channels = SPA_MIN(map->channels, SPA_AUDIO_MAX_CHANNELS);
+	uint32_t i, channels = SPA_MIN(map->channels, max_pos);
 	for (i = 0; i < channels; i++)
 		pos[i] = map->map[i];
 }
@@ -448,8 +450,9 @@ void channel_map_parse(const char *str, struct channel_map *map)
 
 void channel_map_parse_position(const char *str, struct channel_map *map)
 {
-	uint32_t channels = 0, position[SPA_AUDIO_MAX_CHANNELS];
-	spa_audio_parse_position(str, strlen(str), position, &channels);
+	uint32_t channels = 0, position[CHANNELS_MAX];
+	spa_audio_parse_position_n(str, strlen(str), position,
+			SPA_N_ELEMENTS(position), &channels);
 	positions_to_channel_map(position, channels, map);
 }
 
@@ -532,8 +535,7 @@ int format_parse_param(const struct spa_pod *param, bool collect,
 				info.info.raw.rate = 48000;
 			if (info.info.raw.format == 0 ||
 			    info.info.raw.rate == 0 ||
-			    info.info.raw.channels == 0 ||
-			    info.info.raw.channels > SPA_AUDIO_MAX_CHANNELS)
+			    info.info.raw.channels == 0)
 				return -ENOTSUP;
 		}
 		break;
@@ -631,8 +633,8 @@ const struct spa_pod *format_build_param(struct spa_pod_builder *b, uint32_t id,
 			SPA_FORMAT_AUDIO_channels,      SPA_POD_Int(spec->channels), 0);
 
 		if (map && map->channels == spec->channels) {
-			uint32_t positions[SPA_AUDIO_MAX_CHANNELS];
-			channel_map_to_positions(map, positions);
+			uint32_t positions[spec->channels];
+			channel_map_to_positions(map, positions, spec->channels);
                         spa_pod_builder_add(b, SPA_FORMAT_AUDIO_position,
                                 SPA_POD_Array(sizeof(uint32_t), SPA_TYPE_Id,
                                         spec->channels, positions), 0);
@@ -683,7 +685,7 @@ static int add_int(struct format_info *info, const char *k, struct spa_pod *para
 		return -ENOENT;
 
 	val = spa_pod_get_values(&prop->value, &n_values, &choice);
-	if (val->type != SPA_TYPE_Int)
+	if (!spa_pod_is_int(val))
 		return -ENOTSUP;
 
 	if (n_values == 0)
@@ -767,9 +769,7 @@ static int format_info_iec958_from_param(struct format_info *info, struct spa_po
 	if ((info->props = pw_properties_new(NULL, NULL)) == NULL)
 		return -errno;
 
-	add_int(info, "format.rate", param, SPA_FORMAT_AUDIO_rate);
-
-	return 0;
+	return add_int(info, "format.rate", param, SPA_FORMAT_AUDIO_rate);
 }
 
 int format_info_from_param(struct format_info *info, struct spa_pod *param, uint32_t index)

@@ -89,6 +89,8 @@ static void push_samples(void *userdata, float *samples, uint32_t n_samples)
 
 			/* no space.. block and wait for free space */
 			spa_system_eventfd_read(data->loop->system, data->eventfd, &count);
+			if (!data->running)
+				return;
 		}
 		if (avail > n_samples)
 			avail = n_samples;
@@ -189,6 +191,7 @@ int main(int argc, char *argv[])
 {
 	struct data data = { 0, };
 	const struct spa_pod *params[1];
+	uint32_t n_params = 0;
 	uint8_t buffer[1024];
 	struct pw_properties *props;
 	struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
@@ -226,7 +229,7 @@ int main(int argc, char *argv[])
 
 	/* Make one parameter with the supported formats. The SPA_PARAM_EnumFormat
 	 * id means that this is a format enumeration (of 1 value). */
-	params[0] = spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat,
+	params[n_params++] = spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat,
 			&SPA_AUDIO_INFO_RAW_INIT(
 				.format = SPA_AUDIO_FORMAT_F32,
 				.channels = DEFAULT_CHANNELS,
@@ -240,7 +243,7 @@ int main(int argc, char *argv[])
 			  PW_STREAM_FLAG_AUTOCONNECT |
 			  PW_STREAM_FLAG_MAP_BUFFERS |
 			  PW_STREAM_FLAG_RT_PROCESS,
-			  params, 1);
+			  params, n_params);
 
 	/* prefill the ringbuffer */
 	fill_f32(&data, samples, BUFFER_SIZE);

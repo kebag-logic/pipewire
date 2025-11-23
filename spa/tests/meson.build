@@ -28,15 +28,22 @@ if find.found()
 endif
 
 benchmark_apps = [
-  'stress-ringbuffer',
-  'benchmark-pod',
-  'benchmark-dict',
+  ['stress-ringbuffer', []],
+  ['benchmark-pod', []],
+  ['benchmark-dict', []],
 ]
 
+if sndfile_dep.found()
+  benchmark_apps += [
+    ['benchmark-aec', [sndfile_dep]]
+  ]
+endif
+
 foreach a : benchmark_apps
-  benchmark('spa-' + a,
-    executable('spa-' + a, a + '.c',
-      dependencies : [ spa_dep, dl_lib, pthread_lib, mathlib ],
+  benchmark('spa-' + a[0],
+    executable('spa-' + a[0], a[0] + '.c',
+      dependencies : [ spa_dep, dl_lib, pthread_lib, mathlib ] + a[1],
+      include_directories : [configinc],
       install : installed_tests_enabled,
       install_dir : installed_tests_execdir,
     ),
@@ -47,10 +54,10 @@ foreach a : benchmark_apps
 
   if installed_tests_enabled
     test_conf = configuration_data()
-    test_conf.set('exec', installed_tests_execdir / 'spa-' + a)
+    test_conf.set('exec', installed_tests_execdir / 'spa-' + a[0])
     configure_file(
       input: installed_tests_template,
-      output: 'spa-' + a + '.test',
+      output: 'spa-' + a[0] + '.test',
       install_dir: installed_tests_metadir,
       configuration: test_conf,
     )

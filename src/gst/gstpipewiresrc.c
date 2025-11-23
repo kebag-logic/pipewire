@@ -25,6 +25,7 @@
 #include <unistd.h>
 
 #include <spa/param/video/format.h>
+#include <spa/pod/iter.h>
 #include <spa/pod/builder.h>
 #include <spa/utils/result.h>
 
@@ -41,13 +42,14 @@ GST_DEBUG_CATEGORY_STATIC (pipewire_src_debug);
 #define GST_CAT_DEFAULT pipewire_src_debug
 
 #define DEFAULT_ALWAYS_COPY     false
-#define DEFAULT_MIN_BUFFERS     8
+#define DEFAULT_MIN_BUFFERS     1
 #define DEFAULT_MAX_BUFFERS     INT32_MAX
 #define DEFAULT_RESEND_LAST     false
 #define DEFAULT_KEEPALIVE_TIME  0
 #define DEFAULT_AUTOCONNECT     true
 #define DEFAULT_USE_BUFFERPOOL  USE_BUFFERPOOL_AUTO
 #define DEFAULT_ON_DISCONNECT   GST_PIPEWIRE_SRC_ON_DISCONNECT_NONE
+#define DEFAULT_PROVIDE_CLOCK   TRUE
 
 enum
 {
@@ -66,6 +68,7 @@ enum
   PROP_AUTOCONNECT,
   PROP_USE_BUFFERPOOL,
   PROP_ON_DISCONNECT,
+  PROP_PROVIDE_CLOCK,
 };
 
 GType
@@ -195,6 +198,16 @@ gst_pipewire_src_set_property (GObject * object, guint prop_id,
       pwsrc->on_disconnect = g_value_get_enum (value);
       break;
 
+    case PROP_PROVIDE_CLOCK:
+      gboolean provide = g_value_get_boolean (value);
+      GST_OBJECT_LOCK (pwsrc);
+      if (provide)
+        GST_OBJECT_FLAG_SET (pwsrc, GST_ELEMENT_FLAG_PROVIDE_CLOCK);
+      else
+        GST_OBJECT_FLAG_UNSET (pwsrc, GST_ELEMENT_FLAG_PROVIDE_CLOCK);
+      GST_OBJECT_UNLOCK (pwsrc);
+      break;
+
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -262,6 +275,14 @@ gst_pipewire_src_get_property (GObject * object, guint prop_id,
 
     case PROP_ON_DISCONNECT:
       g_value_set_enum (value, pwsrc->on_disconnect);
+      break;
+
+    case PROP_PROVIDE_CLOCK:
+      gboolean result;
+      GST_OBJECT_LOCK (pwsrc);
+      result = GST_OBJECT_FLAG_IS_SET (pwsrc, GST_ELEMENT_FLAG_PROVIDE_CLOCK);
+      GST_OBJECT_UNLOCK (pwsrc);
+      g_value_set_boolean (value, result);
       break;
 
     default:
@@ -452,6 +473,15 @@ gst_pipewire_src_class_init (GstPipeWireSrcClass * klass)
                                                         DEFAULT_ON_DISCONNECT,
                                                         G_PARAM_READWRITE |
                                                         G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class,
+                                   PROP_PROVIDE_CLOCK,
+                                   g_param_spec_boolean ("provide-clock",
+                                                         "Provide Clock",
+                                                         "Provide a clock to be used as the global pipeline clock",
+                                                         DEFAULT_PROVIDE_CLOCK,
+                                                         G_PARAM_READWRITE |
+                                                         G_PARAM_STATIC_STRINGS));
 
   gstelement_class->provide_clock = gst_pipewire_src_provide_clock;
   gstelement_class->change_state = gst_pipewire_src_change_state;
@@ -685,6 +715,7 @@ static GstBuffer *dequeue_buffer(GstPipeWireSrc *pwsrc)
   struct spa_meta_header *h;
   struct spa_meta_region *crop;
   enum spa_meta_videotransform_value transform_value;
+  struct spa_meta_cursor *cursor;
   struct pw_time time;
   guint i;
 
@@ -738,7 +769,7 @@ static GstBuffer *dequeue_buffer(GstPipeWireSrc *pwsrc)
     GST_BUFFER_DTS (buf) = b->time - pwsrc->delay;
   }
 
-  if (pwsrc->is_video) {
+  if (pwsrc->media_type == SPA_MEDIA_TYPE_video) {
     if (pwsrc->video_info.fps_n) {
       GST_BUFFER_DURATION (buf) = gst_util_uint64_scale (GST_SECOND,
           pwsrc->video_info.fps_d, pwsrc->video_info.fps_n);
@@ -775,6 +806,13 @@ static GstBuffer *dequeue_buffer(GstPipeWireSrc *pwsrc)
     gst_pad_push_event (GST_BASE_SRC_PAD (pwsrc), tag_event);
 
     pwsrc->transform_value = transform_value;
+  }
+
+  cursor = data->cursor;
+  if (cursor && cursor->id != 0) {
+    /* TODO: at some point, maybe we can figure out width and height from the bitmap,
+     * and even add that to the meta itself */
+    gst_buffer_add_video_region_of_interest_meta (buf, "cursor", cursor->position.x, cursor->position.y, 0, 0);
   }
 
   if (pwsrc->is_rawvideo) {
@@ -874,7 +912,7 @@ on_state_changed (void *data,
        * must handle the clock lost message in it's bus handler by pausing
        * the pipeline and then setting it back to playing.
        */
-      if (current_state == GST_STATE_PLAYING && !pwsrc->is_video)
+      if (current_state == GST_STATE_PLAYING && pwsrc->media_type == SPA_MEDIA_TYPE_audio)
         gst_element_post_message (GST_ELEMENT_CAST (pwsrc),
             gst_message_new_clock_lost (GST_OBJECT_CAST (pwsrc),
                 GST_CLOCK_CAST (pwsrc->stream->clock)));
@@ -1124,7 +1162,7 @@ gst_pipewire_src_negotiate (GstBaseSrc * basesrc)
   GST_DEBUG_OBJECT (basesrc, "connect capture with path %s, target-object %s",
                     pwsrc->stream->path, pwsrc->stream->target_object);
 
-  pwsrc->possible_caps = gst_caps_ref (possible_caps);
+  gst_caps_replace (&pwsrc->possible_caps, possible_caps);
   pwsrc->negotiated = FALSE;
 
   enum pw_stream_flags flags;
@@ -1168,7 +1206,7 @@ gst_pipewire_src_negotiate (GstBaseSrc * basesrc)
 
   gst_pipewire_clock_reset (GST_PIPEWIRE_CLOCK (pwsrc->stream->clock), 0);
 
-  GST_DEBUG_OBJECT (pwsrc, "set format %" GST_PTR_FORMAT, negotiated_caps);
+  GST_INFO_OBJECT (pwsrc, "set format %" GST_PTR_FORMAT, negotiated_caps);
   result = gst_base_src_set_caps (GST_BASE_SRC (pwsrc), negotiated_caps);
   if (!result)
     goto no_caps;
@@ -1227,7 +1265,7 @@ handle_format_change (GstPipeWireSrc *pwsrc,
   if (param == NULL) {
     GST_DEBUG_OBJECT (pwsrc, "clear format");
     pwsrc->negotiated = FALSE;
-    pwsrc->is_video = FALSE;
+    pwsrc->media_type = SPA_MEDIA_TYPE_unknown;
     return;
   }
 
@@ -1265,7 +1303,7 @@ handle_format_change (GstPipeWireSrc *pwsrc,
     structure = gst_caps_get_structure (pwsrc->caps, 0);
     if (g_str_has_prefix (gst_structure_get_name (structure), "video/") ||
         g_str_has_prefix (gst_structure_get_name (structure), "image/")) {
-      pwsrc->is_video = TRUE;
+      pwsrc->media_type = SPA_MEDIA_TYPE_video;
 
 #ifdef HAVE_GSTREAMER_DMA_DRM
       if (gst_video_is_dma_drm_caps (pwsrc->caps)) {
@@ -1304,19 +1342,21 @@ handle_format_change (GstPipeWireSrc *pwsrc,
        * application/user */
       if (pwsrc->use_bufferpool != USE_BUFFERPOOL_YES)
         pwsrc->use_bufferpool = USE_BUFFERPOOL_NO;
+
+      pwsrc->media_type = SPA_MEDIA_TYPE_audio;
     }
   } else {
     pwsrc->negotiated = FALSE;
-    pwsrc->is_video = FALSE;
+    pwsrc->media_type = SPA_MEDIA_TYPE_unknown;
     pwsrc->is_rawvideo = FALSE;
   }
 
   if (pwsrc->caps) {
-    const struct spa_pod *params[4];
+    const struct spa_pod *params[10];
     struct spa_pod_builder b = { NULL };
-    uint8_t buffer[512];
+    uint8_t buffer[16384];
     uint32_t buffers = CLAMP (16, pwsrc->min_buffers, pwsrc->max_buffers);
-    int buffertypes;
+    int buffertypes, n_params = 0;
 
     buffertypes = (1<<SPA_DATA_DmaBuf);
     if (!spa_pod_find_prop (param, NULL, SPA_FORMAT_VIDEO_modifier)) {
@@ -1326,7 +1366,7 @@ handle_format_change (GstPipeWireSrc *pwsrc,
     GST_DEBUG_OBJECT (pwsrc, "we got format %" GST_PTR_FORMAT, pwsrc->caps);
 
     spa_pod_builder_init (&b, buffer, sizeof (buffer));
-    params[0] = spa_pod_builder_add_object (&b,
+    params[n_params++] = spa_pod_builder_add_object (&b,
         SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers,
         SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(buffers,
                                                             pwsrc->min_buffers,
@@ -1336,21 +1376,31 @@ handle_format_change (GstPipeWireSrc *pwsrc,
         SPA_PARAM_BUFFERS_stride,  SPA_POD_CHOICE_RANGE_Int(0, 0, INT32_MAX),
         SPA_PARAM_BUFFERS_dataType, SPA_POD_CHOICE_FLAGS_Int(buffertypes));
 
-    params[1] = spa_pod_builder_add_object (&b,
+    params[n_params++] = spa_pod_builder_add_object (&b,
         SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
         SPA_PARAM_META_type, SPA_POD_Id(SPA_META_Header),
         SPA_PARAM_META_size, SPA_POD_Int(sizeof (struct spa_meta_header)));
-    params[2] = spa_pod_builder_add_object (&b,
+    params[n_params++] = spa_pod_builder_add_object (&b,
         SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
         SPA_PARAM_META_type, SPA_POD_Id(SPA_META_VideoCrop),
         SPA_PARAM_META_size, SPA_POD_Int(sizeof (struct spa_meta_region)));
-    params[3] = spa_pod_builder_add_object (&b,
+    params[n_params++] = spa_pod_builder_add_object (&b,
         SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
         SPA_PARAM_META_type, SPA_POD_Id(SPA_META_VideoTransform),
         SPA_PARAM_META_size, SPA_POD_Int(sizeof (struct spa_meta_videotransform)));
+#define CURSOR_META_SIZE(width, height) \
+        (sizeof (struct spa_meta_cursor) + \
+         sizeof (struct spa_meta_bitmap) + width * height * 4)
+    params[n_params++] = spa_pod_builder_add_object (&b,
+        SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
+        SPA_PARAM_META_type, SPA_POD_Id(SPA_META_Cursor),
+        SPA_PARAM_META_size,
+        SPA_POD_CHOICE_RANGE_Int (CURSOR_META_SIZE(384, 384),
+          sizeof (struct spa_meta_cursor),
+          CURSOR_META_SIZE(384, 384)));
 
     GST_DEBUG_OBJECT (pwsrc, "doing finish format");
-    pw_stream_update_params (pwsrc->stream->pwstream, params, SPA_N_ELEMENTS(params));
+    pw_stream_update_params (pwsrc->stream->pwstream, params, n_params);
   } else {
     GST_WARNING_OBJECT (pwsrc, "finish format with error");
     pw_stream_set_error (pwsrc->stream->pwstream, -EINVAL, "unhandled format");
@@ -1483,6 +1533,8 @@ gst_pipewire_src_create (GstPushSrc * psrc, GstBuffer ** buffer)
   GstBuffer *buf;
   gboolean update_time = FALSE, timeout = FALSE;
   GstCaps *caps = NULL;
+  struct timespec abstime = { 0, };
+  bool have_abstime = false;
 
   pwsrc = GST_PIPEWIRE_SRC (psrc);
 
@@ -1526,13 +1578,11 @@ gst_pipewire_src_create (GstPushSrc * psrc, GstBuffer ** buffer)
       update_time = TRUE;
       GST_LOG_OBJECT (pwsrc, "EOS, send last buffer");
       break;
-    } else if (timeout) {
-      if (pwsrc->last_buffer != NULL) {
-        update_time = TRUE;
-        buf = gst_buffer_ref(pwsrc->last_buffer);
-        GST_LOG_OBJECT (pwsrc, "timeout, send keepalive buffer");
-        break;
-      }
+    } else if (timeout && pwsrc->last_buffer != NULL) {
+      update_time = TRUE;
+      buf = gst_buffer_ref(pwsrc->last_buffer);
+      GST_LOG_OBJECT (pwsrc, "timeout, send keepalive buffer");
+      break;
     } else {
       buf = dequeue_buffer (pwsrc);
       GST_LOG_OBJECT (pwsrc, "popped buffer %p", buf);
@@ -1544,9 +1594,13 @@ gst_pipewire_src_create (GstPushSrc * psrc, GstBuffer ** buffer)
     }
     timeout = FALSE;
     if (pwsrc->keepalive_time > 0) {
-      struct timespec abstime;
-      pw_thread_loop_get_time(pwsrc->stream->core->loop, &abstime,
-                      pwsrc->keepalive_time * SPA_NSEC_PER_MSEC);
+      if (!have_abstime) {
+        /* Record the time we want to timeout at once, for this loop -- the loop might get unrelated signal()s,
+        * and we don't want the keepalive time to get reset by that */
+        pw_thread_loop_get_time(pwsrc->stream->core->loop, &abstime,
+            pwsrc->keepalive_time * SPA_NSEC_PER_MSEC);
+        have_abstime = TRUE;
+      }
       if (pw_thread_loop_timed_wait_full (pwsrc->stream->core->loop, &abstime) == -ETIMEDOUT)
         timeout = TRUE;
     } else {

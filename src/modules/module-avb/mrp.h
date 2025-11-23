@@ -86,23 +86,29 @@ struct avb_packet_mrp_footer {
 #define AVB_MRP_ATTRIBUTE_EVENT_JOINMT	3
 #define AVB_MRP_ATTRIBUTE_EVENT_MT	4
 #define AVB_MRP_ATTRIBUTE_EVENT_LV	5
+#define AVB_MRP_ATTRIBUTE_EVENT_LVA	6
 
-#define AVB_MRP_SEND_NEW		1
-#define AVB_MRP_SEND_JOININ		2
-#define AVB_MRP_SEND_IN			3
-#define AVB_MRP_SEND_JOINMT		4
-#define AVB_MRP_SEND_MT			5
-#define AVB_MRP_SEND_LV			6
+#define AVB_MRP_SEND_NEW		0
+#define AVB_MRP_SEND_JOININ		1
+#define AVB_MRP_SEND_IN		2
+#define AVB_MRP_SEND_JOINMT		3
+#define AVB_MRP_SEND_MT		4
+#define AVB_MRP_SEND_LV		5
+#define AVB_MRP_SEND_LVA		6
 
 #define AVB_MRP_NOTIFY_NEW		1
 #define AVB_MRP_NOTIFY_JOIN		2
 #define AVB_MRP_NOTIFY_LEAVE		3
 
+const char *avb_applicant_state_name(uint8_t state);
+const char *avb_registrar_state_name(uint8_t state);
+const char *avb_mrp_event_name(uint8_t event);
 const char *avb_mrp_notify_name(uint8_t notify);
 const char *avb_mrp_send_name(uint8_t send);
 
 struct avb_mrp_attribute {
 	uint8_t pending_send;
+	const char *name;
 	void *user_data;
 };
 

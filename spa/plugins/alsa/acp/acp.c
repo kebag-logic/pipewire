@@ -8,7 +8,9 @@
 
 #include <spa/utils/string.h>
 #include <spa/utils/json.h>
+#include <spa/utils/cleanup.h>
 #include <spa/param/audio/iec958-types.h>
+#include <spa/param/audio/raw.h>
 
 int _acp_log_level = 1;
 acp_log_func _acp_log_func;
@@ -145,6 +147,15 @@ char *acp_channel_str(char *buf, size_t len, enum acp_channel ch)
 	return buf;
 }
 
+static enum acp_channel acp_channel_from_str(const char *buf, size_t len)
+{
+	for (unsigned long i = 0; i < ACP_N_ELEMENTS(channel_names); i++) {
+		if (strncmp(channel_names[i], buf, len) == 0)
+			return i;
+	}
+
+	return ACP_CHANNEL_UNKNOWN;
+}
 
 const char *acp_available_str(enum acp_available status)
 {
@@ -234,7 +245,7 @@ static void init_device(pa_card *impl, pa_alsa_device *dev, pa_alsa_direction_t 
 		pa_proplist_update(dev->proplist, PA_UPDATE_REPLACE, m->input_proplist);
 	}
 	if (m->split) {
-		char pos[2048];
+		char pos[PA_CHANNELS_MAX*8];
 		struct spa_strbuf b;
 		int i;
 
@@ -372,7 +383,7 @@ static int add_pro_profile(pa_card *impl, uint32_t index)
 
 	dev = -1;
 	while (1) {
-		char desc[128], devstr[128], *name;
+		char desc[128], devstr[128];
 
 		if ((err = snd_ctl_pcm_next_device(ctl_hndl, &dev)) < 0) {
 			pa_log_error("error iterating devices: %s", snd_strerror(err));
@@ -396,8 +407,13 @@ static int add_pro_profile(pa_card *impl, uint32_t index)
 				pa_log_error("error pcm info: %s", snd_strerror(err));
 		}
 		if (err >= 0) {
+			spa_autofree char *name = NULL;
 			pa_assert_se(asprintf(&name, "Mapping pro-output-%d", dev) >= 0);
 			m = pa_alsa_mapping_get(ps, name);
+		} else {
+			m = NULL;
+		}
+		if (m) {
 			m->description = pa_xstrdup(desc);
 			m->device_strings = pa_split_spaces_strv(devstr);
 
@@ -419,7 +435,6 @@ static int add_pro_profile(pa_card *impl, uint32_t index)
 				n_playback++;
 			}
 			pa_idxset_put(ap->output_mappings, m, NULL);
-			free(name);
 		}
 
 		snd_pcm_info_set_stream(pcminfo, SND_PCM_STREAM_CAPTURE);
@@ -428,8 +443,13 @@ static int add_pro_profile(pa_card *impl, uint32_t index)
 				pa_log_error("error pcm info: %s", snd_strerror(err));
 		}
 		if (err >= 0) {
+			spa_autofree char *name = NULL;
 			pa_assert_se(asprintf(&name, "Mapping pro-input-%d", dev) >= 0);
 			m = pa_alsa_mapping_get(ps, name);
+		} else {
+			m = NULL;
+		}
+		if (m) {
 			m->description = pa_xstrdup(desc);
 			m->device_strings = pa_split_spaces_strv(devstr);
 
@@ -451,12 +471,18 @@ static int add_pro_profile(pa_card *impl, uint32_t index)
 				n_capture++;
 			}
 			pa_idxset_put(ap->input_mappings, m, NULL);
-			free(name);
 		}
 	}
 	snd_ctl_close(ctl_hndl);
 
-	if (n_capture == 1 && n_playback == 1) {
+	/* FireWire ALSA driver latency is determined by the buffer size and not the
+	 * period. Timer-based scheduling is then not really useful on these devices as
+	 * the latency is fixed. Enable IRQ scheduling unconditionally for these devices,
+	 * so that controlling the latency works properly.
+	 */
+	bool is_firewire = spa_streq(pa_proplist_gets(impl->proplist, "device.bus"), "firewire");
+
+	if ((n_capture == 1 && n_playback == 1) || is_firewire) {
 		PA_IDXSET_FOREACH(m, ap->output_mappings, idx) {
 			pa_proplist_setf(m->output_proplist, "node.group", "pro-audio-%u", index);
 			pa_proplist_setf(m->output_proplist, "node.link-group", "pro-audio-%u", index);
@@ -513,7 +539,8 @@ static void add_profiles(pa_card *impl)
 	ap->profile.flags = ACP_PROFILE_OFF;
 	pa_hashmap_put(impl->profiles, ap->name, ap);
 
-	add_pro_profile(impl, impl->card.index);
+	if (!impl->disable_pro_audio)
+		add_pro_profile(impl, impl->card.index);
 
 	PA_HASHMAP_FOREACH(ap, impl->profile_set->profiles, state) {
 		pa_alsa_mapping *m;
@@ -1047,8 +1074,8 @@ static int hdmi_eld_changed(snd_mixer_elem_t *melem, unsigned int mask)
 {
 	pa_card *impl = snd_mixer_elem_get_callback_private(melem);
 	snd_hctl_elem_t **_elem = snd_mixer_elem_get_private(melem), *elem;
-	int device, i;
-	const char *old_monitor_name, *old_iec958_codec_list;
+	int device;
+	const char *old_monitor_name, *old_iec958_codec_list, *old_channels, *old_position;
 	pa_device_port *p;
 	pa_hdmi_eld eld;
 	bool changed = false;
@@ -1070,7 +1097,7 @@ static int hdmi_eld_changed(snd_mixer_elem_t *melem, unsigned int mask)
 		memset(&eld, 0, sizeof(eld));
 
 	// Strip trailing whitespace from monitor_name (primarily an NVidia driver bug for now)
-	for (i = strlen(eld.monitor_name) - 1; i >= 0; i--) {
+	for (int i = strlen(eld.monitor_name) - 1; i >= 0; i--) {
 		if (eld.monitor_name[i] == '\n' || eld.monitor_name[i] == '\r' || eld.monitor_name[i] == '\t' ||
 				eld.monitor_name[i] == ' ')
 			eld.monitor_name[i] = 0;
@@ -1096,6 +1123,67 @@ static int hdmi_eld_changed(snd_mixer_elem_t *melem, unsigned int mask)
 		acp_iec958_codec_mask_to_json(eld.iec958_codecs, codecs, sizeof(codecs));
 		changed |= (old_iec958_codec_list == NULL) || (!spa_streq(old_iec958_codec_list, codecs));
 		pa_proplist_sets(p->proplist, ACP_KEY_IEC958_CODECS_DETECTED, codecs);
+	}
+
+	old_channels = pa_proplist_gets(p->proplist, ACP_KEY_AUDIO_CHANNELS_DETECTED);
+	if (eld.lpcm_channels == 0) {
+		changed |= old_channels != NULL;
+		pa_proplist_unset(p->proplist, ACP_KEY_AUDIO_CHANNELS_DETECTED);
+	} else {
+		char channels[4];
+		snprintf(channels, sizeof(channels), "%u", eld.lpcm_channels);
+		changed |= (old_channels == NULL) || (!spa_streq(old_channels, channels));
+		pa_proplist_sets(p->proplist, ACP_KEY_AUDIO_CHANNELS_DETECTED, channels);
+	}
+
+	old_position = pa_proplist_gets(p->proplist, ACP_KEY_AUDIO_POSITION_DETECTED);
+	if (eld.speakers == 0) {
+		changed |= old_position != NULL;
+		pa_proplist_unset(p->proplist, ACP_KEY_AUDIO_POSITION_DETECTED);
+	} else {
+		uint32_t positions[eld.lpcm_channels];
+		char position[eld.lpcm_channels * 8];
+		struct spa_strbuf b;
+		int i = 0;
+
+		if (eld.speakers & 0x01) {
+			positions[i++] = ACP_CHANNEL_FL;
+			positions[i++] = ACP_CHANNEL_FR;
+		}
+		if (eld.speakers & 0x02) {
+			positions[i++] = ACP_CHANNEL_LFE;
+		}
+		if (eld.speakers & 0x04) {
+			positions[i++] = ACP_CHANNEL_FC;
+		}
+		if (eld.speakers & 0x08) {
+			positions[i++] = ACP_CHANNEL_RL;
+			positions[i++] = ACP_CHANNEL_RR;
+		}
+		/* The rest are out of order in order of what channels we would prefer to use/expose first */
+		if (eld.speakers & 0x40) {
+			/* Use SL/SR instead of RLC/RRC */
+			positions[i++] = ACP_CHANNEL_SL;
+			positions[i++] = ACP_CHANNEL_SR;
+		}
+		if (eld.speakers & 0x20) {
+			positions[i++] = ACP_CHANNEL_RLC;
+			positions[i++] = ACP_CHANNEL_RRC;
+		}
+		if (eld.speakers & 0x10) {
+			positions[i++] = ACP_CHANNEL_RC;
+		}
+		while (i < eld.lpcm_channels)
+			positions[i++] = ACP_CHANNEL_UNKNOWN;
+
+		spa_strbuf_init(&b, position, sizeof(position));
+		spa_strbuf_append(&b, "[");
+		for (i = 0; i < eld.lpcm_channels; i++)
+			spa_strbuf_append(&b, "%s%s", i ? "," : "", channel_names[positions[i]]);
+		spa_strbuf_append(&b, "]");
+
+		changed |= (old_position == NULL) || (!spa_streq(old_position, position));
+		pa_proplist_sets(p->proplist, ACP_KEY_AUDIO_POSITION_DETECTED, position);
 	}
 
 	pa_proplist_as_dict(p->proplist, &p->port.props);
@@ -1190,7 +1278,7 @@ uint32_t acp_card_find_best_profile_index(struct acp_card *card, const char *nam
 
 static void find_mixer(pa_card *impl, pa_alsa_device *dev, const char *element, bool ignore_dB)
 {
-	const char *mdev;
+	const char *mdev = NULL;
 	pa_alsa_mapping *mapping = dev->mapping;
 
 	if (!mapping && !element)
@@ -1199,7 +1287,8 @@ static void find_mixer(pa_card *impl, pa_alsa_device *dev, const char *element, 
 	if (!element && mapping && pa_alsa_path_set_is_empty(dev->mixer_path_set))
 		return;
 
-	mdev = pa_proplist_gets(mapping->proplist, "alsa.mixer_device");
+	if (mapping)
+		mdev = pa_proplist_gets(mapping->proplist, "alsa.mixer_device");
 	if (mdev) {
 		dev->mixer_handle = pa_alsa_open_mixer_by_name(impl->ucm.mixers, mdev, true);
 	} else {
@@ -1601,7 +1690,6 @@ static int device_enable(pa_card *impl, pa_alsa_mapping *mapping, pa_alsa_device
 {
 	const char *mod_name;
 	uint32_t i, port_index;
-	const char *codecs;
 	pa_device_port *p;
 	void *state = NULL;
 	int res;
@@ -1640,6 +1728,29 @@ static int device_enable(pa_card *impl, pa_alsa_mapping *mapping, pa_alsa_device
 	if (dev->active_port)
 		dev->active_port->port.flags |= ACP_PORT_ACTIVE;
 
+	if (impl->use_eld_channels) {
+		while ((p = pa_hashmap_iterate(dev->ports, &state, NULL))) {
+			const char *channels = pa_proplist_gets(p->proplist, ACP_KEY_AUDIO_CHANNELS_DETECTED);
+			const char *positions = pa_proplist_gets(p->proplist, ACP_KEY_AUDIO_POSITION_DETECTED);
+
+			if (channels && positions) {
+				const char *position, *split_state = NULL;
+				size_t i = 0, n;
+
+				dev->device.format.channels = atoi(channels);
+				free(dev->device.format.map);
+				dev->device.format.map = calloc(dev->device.format.channels, sizeof(uint32_t));
+
+				while ((position = pa_split_in_place(positions, ",", &n, &split_state)) != NULL &&
+						i < dev->device.format.channels) {
+					dev->device.format.map[i++] = acp_channel_from_str(position, n);
+				}
+
+				break;
+			}
+		}
+	}
+
 	if ((res = setup_mixer(impl, dev, impl->ignore_dB)) < 0)
 		return res;
 
@@ -1654,13 +1765,16 @@ static int device_enable(pa_card *impl, pa_alsa_mapping *mapping, pa_alsa_device
 	else
 		dev->muted = false;
 
+	state = NULL;
 	while ((p = pa_hashmap_iterate(dev->ports, &state, NULL))) {
-		codecs = pa_proplist_gets(p->proplist, ACP_KEY_IEC958_CODECS_DETECTED);
+		const char *codecs = pa_proplist_gets(p->proplist, ACP_KEY_IEC958_CODECS_DETECTED);
 		if (codecs) {
 			dev->device.n_codecs = acp_iec958_codecs_from_json(codecs, dev->device.codecs,
 									   ACP_N_ELEMENTS(dev->device.codecs));
-			break;
 		}
+
+		if (codecs)
+			break;
 	}
 
 	return 0;
@@ -1850,6 +1964,10 @@ struct acp_card *acp_card_new(uint32_t index, const struct acp_dict *props)
 			impl->pro_channels = atoi(s);
 		if ((s = acp_dict_lookup(props, "api.alsa.split-enable")) != NULL)
 			impl->ucm.split_enable = spa_atob(s);
+		if ((s = acp_dict_lookup(props, "api.acp.disable-pro-audio")) != NULL)
+			impl->disable_pro_audio = spa_atob(s);
+		if ((s = acp_dict_lookup(props, "api.acp.use-eld-channels")) != NULL)
+			impl->use_eld_channels = spa_atob(s);
 	}
 
 #if SND_LIB_VERSION < 0x10207

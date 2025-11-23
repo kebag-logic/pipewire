@@ -19,6 +19,7 @@
 #include <spa/utils/result.h>
 #include <spa/utils/ringbuffer.h>
 #include <spa/utils/json.h>
+#include <spa/utils/ratelimit.h>
 #include <spa/param/audio/format-utils.h>
 #include <spa/debug/types.h>
 
@@ -76,6 +77,7 @@
  * - \ref PW_KEY_AUDIO_FORMAT
  * - \ref PW_KEY_AUDIO_RATE
  * - \ref PW_KEY_AUDIO_CHANNELS
+ * - \ref SPA_KEY_AUDIO_LAYOUT
  * - \ref SPA_KEY_AUDIO_POSITION
  * - \ref PW_KEY_NODE_NAME
  * - \ref PW_KEY_NODE_DESCRIPTION
@@ -149,6 +151,7 @@ PW_LOG_TOPIC(mod_topic, "mod." NAME);
 		"( audio.rate=<sample rate, default:"SPA_STRINGIFY(DEFAULT_RATE)"> ) "			\
 		"( audio.channels=<number of channels, default:"SPA_STRINGIFY(DEFAULT_CHANNELS)"> ) "	\
 		"( audio.position=<channel map, default:"DEFAULT_POSITION"> ) "				\
+		"( audio.layout=<channel layout, default:"DEFAULT_LAYOUT"> ) "				\
 		"( aes67.driver-group=<driver driving the PTP send> ) "					\
 		"( stream.props= { key=value ... } ) "
 
@@ -174,6 +177,8 @@ struct impl {
 
 	struct pw_properties *stream_props;
 	struct rtp_stream *stream;
+
+	struct spa_ratelimit rate_limit;
 
 	unsigned int do_disconnect:1;
 
@@ -279,6 +284,13 @@ static void stream_destroy(void *d)
 	impl->stream = NULL;
 }
 
+static inline uint64_t get_time_ns(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return SPA_TIMESPEC_TO_NSEC(&ts);
+}
+
 static void stream_send_packet(void *data, struct iovec *iov, size_t iovlen)
 {
 	struct impl *impl = data;
@@ -293,32 +305,56 @@ static void stream_send_packet(void *data, struct iovec *iov, size_t iovlen)
 	msg.msg_flags = 0;
 
 	n = sendmsg(impl->rtp_fd, &msg, MSG_NOSIGNAL);
-	if (n < 0)
-		pw_log_warn("sendmsg() failed: %m");
+	if (n < 0) {
+		int suppressed;
+		if ((suppressed = spa_ratelimit_test(&impl->rate_limit, get_time_ns())) >= 0)
+			pw_log_warn("(%d suppressed) sendmsg() failed: %m", suppressed);
+	}
 }
 
-static void stream_state_changed(void *data, bool started, const char *error)
+static void stream_report_error(void *data, const char *error)
 {
 	struct impl *impl = data;
-
 	if (error) {
 		pw_log_error("stream error: %s", error);
 		pw_impl_module_schedule_destroy(impl->module);
-	} else if (started) {
-		int res;
+	}
+}
 
-		if ((res = make_socket(&impl->src_addr, impl->src_len,
-					&impl->dst_addr, impl->dst_len,
-					impl->mcast_loop, impl->ttl, impl->dscp,
-					impl->ifname)) < 0) {
-			pw_log_error("can't make socket: %s", spa_strerror(res));
-			rtp_stream_set_error(impl->stream, res, "Can't make socket");
-			return;
-		}
-		impl->rtp_fd = res;
-	} else {
+static void stream_open_connection(void *data, int *result)
+{
+	int res;
+	struct impl *impl = data;
+
+	if ((res = make_socket(&impl->src_addr, impl->src_len,
+				&impl->dst_addr, impl->dst_len,
+				impl->mcast_loop, impl->ttl, impl->dscp,
+				impl->ifname)) < 0) {
+		pw_log_error("can't make socket: %s", spa_strerror(res));
+		rtp_stream_set_error(impl->stream, res, "Can't make socket");
+		if (result)
+			*result = res;
+		return;
+	}
+
+	if (result)
+		*result = 1;
+
+	impl->rtp_fd = res;
+}
+
+static void stream_close_connection(void *data, int *result)
+{
+	struct impl *impl = data;
+
+	if (impl->rtp_fd > 0) {
+		if (result)
+			*result = 1;
 		close(impl->rtp_fd);
 		impl->rtp_fd = -1;
+	} else {
+		if (result)
+			*result = 0;
 	}
 }
 
@@ -404,7 +440,9 @@ static void stream_param_changed(void *data, uint32_t id, const struct spa_pod *
 static const struct rtp_stream_events stream_events = {
 	RTP_VERSION_STREAM_EVENTS,
 	.destroy = stream_destroy,
-	.state_changed = stream_state_changed,
+	.report_error = stream_report_error,
+	.open_connection = stream_open_connection,
+	.close_connection = stream_close_connection,
 	.param_changed = stream_param_changed,
 	.send_packet = stream_send_packet,
 };
@@ -429,8 +467,10 @@ static void impl_destroy(struct impl *impl)
 	if (impl->core && impl->do_disconnect)
 		pw_core_disconnect(impl->core);
 
-	if (impl->rtp_fd != -1)
+	if (impl->rtp_fd != -1) {
+		pw_log_info("closing socket with FD %d as part of shutdown", impl->rtp_fd);
 		close(impl->rtp_fd);
+	}
 
 	pw_properties_free(impl->stream_props);
 	pw_properties_free(impl->props);
@@ -516,6 +556,9 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	}
 	impl->stream_props = stream_props;
 
+	impl->rate_limit.interval = 2 * SPA_NSEC_PER_SEC;
+	impl->rate_limit.burst = 1;
+
 	impl->module = module;
 	impl->context = context;
 	impl->loop = pw_context_get_main_loop(context);
@@ -537,6 +580,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	copy_props(impl, props, PW_KEY_AUDIO_FORMAT);
 	copy_props(impl, props, PW_KEY_AUDIO_RATE);
 	copy_props(impl, props, PW_KEY_AUDIO_CHANNELS);
+	copy_props(impl, props, SPA_KEY_AUDIO_LAYOUT);
 	copy_props(impl, props, SPA_KEY_AUDIO_POSITION);
 	copy_props(impl, props, PW_KEY_NODE_NAME);
 	copy_props(impl, props, PW_KEY_NODE_DESCRIPTION);

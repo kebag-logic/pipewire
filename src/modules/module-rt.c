@@ -26,6 +26,8 @@
   SOFTWARE.
 ***/
 
+#include "config.h"
+
 #include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
@@ -43,8 +45,6 @@
 #include <pthread.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
-
-#include "config.h"
 
 #include <spa/utils/result.h>
 #include <spa/utils/string.h>
@@ -136,11 +136,14 @@ PW_LOG_TOPIC_STATIC(mod_topic, "mod." NAME);
 #define PW_LOG_TOPIC_DEFAULT mod_topic
 
 #define REALTIME_POLICY         SCHED_FIFO
-#ifdef SCHED_RESET_ON_FORK
-#define PW_SCHED_RESET_ON_FORK  SCHED_RESET_ON_FORK
-#else
+
 /* FreeBSD compat */
-#define PW_SCHED_RESET_ON_FORK  0
+#ifndef SCHED_RESET_ON_FORK
+#define SCHED_RESET_ON_FORK 0
+#endif
+
+#ifndef RLIMIT_RTTIME
+#define RLIMIT_RTTIME 15
 #endif
 
 #define MIN_NICE_LEVEL		-20
@@ -192,7 +195,7 @@ struct thread {
 	struct impl *impl;
 	struct spa_list link;
 	pthread_t thread;
-	pid_t pid;
+	pid_t tid;
 	void *(*start)(void*);
 	void *arg;
 };
@@ -203,7 +206,7 @@ struct impl {
 
 	struct spa_thread_utils thread_utils;
 
-	pid_t main_pid;
+	pid_t main_tid;
 	struct rlimit rl;
 	int nice_level;
 	int rt_prio;
@@ -239,10 +242,6 @@ struct impl {
 	struct spa_list threads_list;
 #endif
 };
-
-#ifndef RLIMIT_RTTIME
-#define RLIMIT_RTTIME 15
-#endif
 
 static pthread_mutex_t rlimit_lock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -483,6 +482,9 @@ static void module_destroy(void *data)
 		pw_thread_loop_destroy(impl->thread_loop);
 	if (impl->rtkit_bus)
 		pw_rtkit_bus_free(impl->rtkit_bus);
+
+	pthread_cond_destroy(&impl->cond);
+	pthread_mutex_destroy(&impl->lock);
 #endif
 
 	free(impl);
@@ -567,8 +569,8 @@ static bool check_realtime_privileges(struct impl *impl)
 		spa_zero(new_sched_params);
 		new_sched_params.sched_priority = SPA_CLAMP((int)priority, min, max);
 		new_policy = REALTIME_POLICY;
-		if ((old_policy & PW_SCHED_RESET_ON_FORK) != 0)
-			new_policy |= PW_SCHED_RESET_ON_FORK;
+		if ((old_policy & SCHED_RESET_ON_FORK) != 0)
+			new_policy |= SCHED_RESET_ON_FORK;
 
 		/* Disable RLIMIT_RTTIME in a thread safe way and hope that the application
 		 * doesn't also set RLIMIT_RTTIME while trying new_policy. */
@@ -595,14 +597,6 @@ static bool check_realtime_privileges(struct impl *impl)
 	return ret;
 }
 
-static int sched_set_nice(pid_t pid, int nice_level)
-{
-	if (setpriority(PRIO_PROCESS, pid, nice_level) == 0)
-		return 0;
-	else
-		return -errno;
-}
-
 static int set_nice(struct impl *impl, int nice_level, bool warn)
 {
 	int res = 0;
@@ -614,12 +608,14 @@ static int set_nice(struct impl *impl, int nice_level, bool warn)
 					nice_level, impl->min_nice_level);
 			nice_level = impl->min_nice_level;
 		}
-		res = pw_rtkit_make_high_priority(impl, impl->main_pid, nice_level);
+		res = pw_rtkit_make_high_priority(impl, impl->main_tid, nice_level);
 	}
 	else
 #endif
-	if (impl->rlimits_enabled)
-		res = sched_set_nice(impl->main_pid, nice_level);
+	if (impl->rlimits_enabled) {
+		if (setpriority(PRIO_PROCESS, impl->main_tid, nice_level) < 0)
+			res = -errno;
+	}
 	else
 		res = -ENOTSUP;
 
@@ -627,9 +623,6 @@ static int set_nice(struct impl *impl, int nice_level, bool warn)
 		if (warn)
 			pw_log_warn("could not set nice-level to %d: %s",
 					nice_level, spa_strerror(res));
-	} else if (res > 0) {
-		pw_log_info("main thread setting nice level to %d: %s",
-				nice_level, spa_strerror(-res));
 	} else {
 		pw_log_info("main thread nice level set to %d",
 				nice_level);
@@ -657,8 +650,8 @@ static int set_rlimit(struct rlimit *rlim)
 
 static int acquire_rt_sched(struct spa_thread *thread, int priority)
 {
-	int err, min, max;
-	struct sched_param sp;
+	int err, min, max, new_policy, old_policy;
+	struct sched_param new_sched_params, old_sched_params;
 	pthread_t pt = (pthread_t)thread;
 
 	min = max = 0;
@@ -670,10 +663,18 @@ static int acquire_rt_sched(struct spa_thread *thread, int priority)
 				priority, min, max, REALTIME_POLICY);
 		priority = SPA_CLAMP(priority, min, max);
 	}
+	if ((err = pthread_getschedparam(pt, &old_policy, &old_sched_params)) != 0) {
+		pw_log_warn("Failed to get scheduling params: %s", strerror(err));
+		old_policy = SCHED_RESET_ON_FORK;
+	}
 
-	spa_zero(sp);
-	sp.sched_priority = priority;
-	if ((err = pthread_setschedparam(pt, REALTIME_POLICY | PW_SCHED_RESET_ON_FORK, &sp)) != 0) {
+	spa_zero(new_sched_params);
+	new_sched_params.sched_priority = priority;
+	new_policy = REALTIME_POLICY;
+	if ((old_policy & SCHED_RESET_ON_FORK) != 0)
+		new_policy |= SCHED_RESET_ON_FORK;
+
+	if ((err = pthread_setschedparam(pt, new_policy, &new_sched_params)) != 0) {
 		pw_log_warn("could not make thread %p realtime: %s", thread, strerror(err));
 		return -err;
 	}
@@ -684,12 +685,21 @@ static int acquire_rt_sched(struct spa_thread *thread, int priority)
 
 static int impl_drop_rt_generic(void *object, struct spa_thread *thread)
 {
-	struct sched_param sp;
+	struct sched_param new_sched_params, old_sched_params;
 	pthread_t pt = (pthread_t)thread;
-	int err;
+	int err, new_policy, old_policy;
 
-	spa_zero(sp);
-	if ((err = pthread_setschedparam(pt, SCHED_OTHER | PW_SCHED_RESET_ON_FORK, &sp)) != 0) {
+	if ((err = pthread_getschedparam(pt, &old_policy, &old_sched_params)) != 0) {
+		pw_log_warn("Failed to get scheduling params: %s", strerror(err));
+		old_policy = SCHED_RESET_ON_FORK;
+	}
+
+	spa_zero(new_sched_params);
+	new_policy = SCHED_OTHER;
+	if (SPA_FLAG_IS_SET(old_policy, SCHED_RESET_ON_FORK))
+		new_policy |= SCHED_RESET_ON_FORK;
+
+	if ((err = pthread_setschedparam(pt, new_policy, &new_sched_params)) != 0) {
 		pw_log_debug("thread %p: SCHED_OTHER|SCHED_RESET_ON_FORK failed: %s",
 				thread, strerror(err));
 		return -err;
@@ -716,7 +726,7 @@ static void *custom_start(void *data)
 	struct impl *impl = this->impl;
 
 	pthread_mutex_lock(&impl->lock);
-	this->pid = _gettid();
+	this->tid = _gettid();
 	pthread_cond_broadcast(&impl->cond);
 	pthread_mutex_unlock(&impl->lock);
 
@@ -762,7 +772,7 @@ static int impl_join(void *object, struct spa_thread *thread, void **retval)
 	struct thread *thr;
 	int res;
 
-	res = pthread_join(pt, retval);
+	res = pw_thread_utils_join(thread, retval);
 
 	pthread_mutex_lock(&impl->lock);
 	if ((thr = find_thread_by_pt(impl, pt)) != NULL) {
@@ -775,7 +785,7 @@ static int impl_join(void *object, struct spa_thread *thread, void **retval)
 }
 
 
-static int get_rtkit_priority_range(struct impl *impl, int *min, int *max)
+static void get_rtkit_priority_range(struct impl *impl, int *min, int *max)
 {
 	if (min)
 		*min = 1;
@@ -784,23 +794,22 @@ static int get_rtkit_priority_range(struct impl *impl, int *min, int *max)
 		if (*max < 1)
 			*max = 1;
 	}
-	return 0;
 }
 
 static int impl_get_rt_range(void *object, const struct spa_dict *props,
 		int *min, int *max)
 {
 	struct impl *impl = object;
-	int res;
+	int res = 0;
 	if (impl->use_rtkit)
-		res = get_rtkit_priority_range(impl, min, max);
+		get_rtkit_priority_range(impl, min, max);
 	else
 		res = get_rt_priority_range(min, max);
 	return res;
 }
 
 struct rt_params {
-	pid_t pid;
+	pid_t tid;
 	int priority;
 };
 
@@ -810,12 +819,11 @@ static int do_make_realtime(struct spa_loop *loop, bool async, uint32_t seq,
 	struct impl *impl = user_data;
 	const struct rt_params *params = data;
 	int err, min, max, priority = params->priority;
-	pid_t pid = params->pid;
+	pid_t pid = params->tid;
 
 	pw_log_debug("rtkit realtime");
 
-	if ((err = get_rtkit_priority_range(impl, &min, &max)) < 0)
-		return err;
+	get_rtkit_priority_range(impl, &min, &max);
 
 	if (priority < min || priority > max) {
 		pw_log_info("clamping requested priority %d for thread %d "
@@ -848,20 +856,21 @@ static int impl_acquire_rt(void *object, struct spa_thread *thread, int priority
 		struct thread *thr;
 
 		spa_zero(sp);
-		if (pthread_setschedparam(pt, SCHED_OTHER | PW_SCHED_RESET_ON_FORK, &sp) == 0) {
+		if (pthread_setschedparam(pt, SCHED_OTHER | SCHED_RESET_ON_FORK, &sp) == 0) {
 			pw_log_debug("SCHED_OTHER|SCHED_RESET_ON_FORK worked.");
 		}
 
-		params.priority = priority;
-
 		pthread_mutex_lock(&impl->lock);
-		if ((thr = find_thread_by_pt(impl, pt)) != NULL)
-			params.pid = thr->pid;
-		else
-			params.pid = _gettid();
+		if ((thr = find_thread_by_pt(impl, pt)) != NULL) {
+			params.priority = priority;
+			params.tid = thr->tid;
 
-		res = pw_loop_invoke(pw_thread_loop_get_loop(impl->thread_loop),
+			res = pw_loop_invoke(pw_thread_loop_get_loop(impl->thread_loop),
 				do_make_realtime, 0, &params, sizeof(params), false, impl);
+		}
+		else {
+			res = -ESRCH;
+		}
 		pthread_mutex_unlock(&impl->lock);
 
 		return res;
@@ -869,15 +878,6 @@ static int impl_acquire_rt(void *object, struct spa_thread *thread, int priority
 		return acquire_rt_sched(thread, priority);
 	}
 }
-
-static const struct spa_thread_utils_methods impl_thread_utils = {
-	SPA_VERSION_THREAD_UTILS_METHODS,
-	.create = impl_create,
-	.join = impl_join,
-	.get_rt_range = impl_get_rt_range,
-	.acquire_rt = impl_acquire_rt,
-	.drop_rt = impl_drop_rt_generic,
-};
 
 #else /* HAVE_DBUS */
 
@@ -909,6 +909,8 @@ static int impl_acquire_rt(void *object, struct spa_thread *thread, int priority
 	return acquire_rt_sched(thread, priority);
 }
 
+#endif /* HAVE_DBUS */
+
 static const struct spa_thread_utils_methods impl_thread_utils = {
 	SPA_VERSION_THREAD_UTILS_METHODS,
 	.create = impl_create,
@@ -917,23 +919,19 @@ static const struct spa_thread_utils_methods impl_thread_utils = {
 	.acquire_rt = impl_acquire_rt,
 	.drop_rt = impl_drop_rt_generic,
 };
-#endif /* HAVE_DBUS */
-
 
 #ifdef HAVE_DBUS
-static int check_rtkit(struct impl *impl, struct pw_context *context, bool *can_use_rtkit)
+static bool check_rtkit(struct pw_context *context)
 {
 	const struct pw_properties *context_props;
 	const char *str;
 
-	*can_use_rtkit = true;
-
 	if ((context_props = pw_context_get_properties(context)) != NULL &&
 	    (str = pw_properties_get(context_props, "support.dbus")) != NULL &&
 	    !pw_properties_parse_bool(str))
-		*can_use_rtkit = false;
+		return false;
 
-	return 0;
+	return true;
 }
 
 static int rtkit_get_bus(struct impl *impl)
@@ -1024,7 +1022,8 @@ static int do_rtkit_setup(struct spa_loop *loop, bool async, uint32_t seq,
 }
 #endif /* HAVE_DBUS */
 
-static int set_uclamp(int uclamp_min, int uclamp_max, pid_t pid) {
+static int set_uclamp(int uclamp_min, int uclamp_max, pid_t pid)
+{
 #ifdef __linux__
 	int ret;
 	struct sched_attr {
@@ -1040,7 +1039,7 @@ static int set_uclamp(int uclamp_min, int uclamp_max, pid_t pid) {
 		uint32_t sched_util_max;
 	} attr;
 
-	ret = syscall(SYS_sched_getattr, pid, &attr, sizeof(struct sched_attr), 0);
+	ret = syscall(SYS_sched_getattr, pid, &attr, sizeof(attr), 0);
 	if (ret) {
 		pw_log_warn("Could not retrieve scheduler attributes: %d", -errno);
 		return -errno;
@@ -1073,7 +1072,6 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 {
 	struct pw_context *context = pw_impl_module_get_context(module);
 	struct impl *impl;
-	struct pw_properties *props;
 	int res = 0;
 
 	PW_LOG_TOPIC_INIT(mod_topic);
@@ -1084,7 +1082,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 
 	pw_log_debug("module %p: new", impl);
 
-	props = args ? pw_properties_new_string(args) : pw_properties_new(NULL, NULL);
+	spa_autoptr(pw_properties) props = args ? pw_properties_new_string(args) : pw_properties_new(NULL, NULL);
 	if (!props) {
 		res = -errno;
 		goto error;
@@ -1104,7 +1102,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 
 	impl->rl.rlim_cur = impl->rt_time_soft;
 	impl->rl.rlim_max = impl->rt_time_hard;
-	impl->main_pid = _gettid();
+	impl->main_tid = _gettid();
 
 	bool can_use_rtkit = false, use_rtkit = false;
 
@@ -1119,9 +1117,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	pthread_mutex_init(&impl->lock, NULL);
 	pthread_cond_init(&impl->cond, NULL);
 
-	if ((res = check_rtkit(impl, context, &can_use_rtkit)) < 0)
-		goto error;
-
+	can_use_rtkit = check_rtkit(context);
 #endif
 	/* If the user has permissions to use regular realtime scheduling, as well as
 	 * the nice level we want, then we'll use that instead of RTKit */
@@ -1148,7 +1144,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	}
 
 	if (impl->uclamp_min || impl->uclamp_max < 1024)
-		set_uclamp(impl->uclamp_min, impl->uclamp_max, impl->main_pid);
+		set_uclamp(impl->uclamp_min, impl->uclamp_max, impl->main_tid);
 
 #ifdef HAVE_DBUS
 	impl->use_rtkit = use_rtkit;
@@ -1174,12 +1170,11 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 				do_rtkit_setup, 0, NULL, 0, false, impl);
 
 		pw_log_debug("initialized using RTKit");
-	} else {
+	} else
+#endif
+	{
 		pw_log_debug("initialized using regular realtime scheduling");
 	}
-#else
-	pw_log_debug("initialized using regular realtime scheduling");
-#endif
 
 	impl->thread_utils.iface = SPA_INTERFACE_INIT(
 			SPA_TYPE_INTERFACE_ThreadUtils,
@@ -1194,7 +1189,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	pw_impl_module_update_properties(module, &SPA_DICT_INIT_ARRAY(module_props));
 	pw_impl_module_update_properties(module, &props->dict);
 
-	goto done;
+	return 0;
 
 error:
 #ifdef HAVE_DBUS
@@ -1204,8 +1199,6 @@ error:
 		pw_rtkit_bus_free(impl->rtkit_bus);
 #endif
 	free(impl);
-done:
-	pw_properties_free(props);
 
 	return res;
 }

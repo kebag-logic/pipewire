@@ -5,10 +5,6 @@
 #ifndef SPA_ALSA_UTILS_H
 #define SPA_ALSA_UTILS_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include <stddef.h>
 #include <math.h>
 
@@ -35,8 +31,12 @@ extern "C" {
 
 #include "alsa.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #define MAX_RATES	16
+#define MAX_CHANNELS SPA_AUDIO_MAX_CHANNELS
 
 #define DEFAULT_PERIOD		1024u
 #define DEFAULT_RATE		48000u
@@ -72,8 +72,8 @@ struct buffer {
 #define BW_PERIOD	(3 * SPA_NSEC_PER_SEC)
 
 struct channel_map {
-	uint32_t channels;
-	uint32_t pos[SPA_AUDIO_MAX_CHANNELS];
+	uint32_t n_pos;
+	uint32_t pos[MAX_CHANNELS];
 };
 
 struct card {
@@ -155,6 +155,7 @@ struct state {
 	unsigned int disable_batch:1;
 	unsigned int disable_tsched:1;
 	unsigned int is_split_parent:1;
+	unsigned int is_firewire:1;
 	char clock_name[64];
 	uint32_t quantum_limit;
 
@@ -169,6 +170,7 @@ struct state {
 	uint32_t delay;
 	uint32_t read_size;
 	uint32_t max_read;
+	uint32_t duration;
 
 	uint64_t port_info_all;
 	struct spa_port_info port_info;
@@ -202,6 +204,7 @@ struct state {
 	int n_fds;
 	uint32_t threshold;
 	uint32_t last_threshold;
+	snd_pcm_uframes_t period_size_min;
 	uint32_t headroom;
 	uint32_t start_delay;
 	uint32_t min_delay;
@@ -229,9 +232,11 @@ struct state {
 	unsigned int is_pro:1;
 	unsigned int sources_added:1;
 	unsigned int auto_link:1;
+	unsigned int dsd_lsb:1;
 	unsigned int linked:1;
 	unsigned int is_batch:1;
-	unsigned int force_rate:1;
+	unsigned int force_quantum:1;
+	unsigned int use_period_size_min_as_headroom:1;
 
 	uint64_t iec958_codecs;
 
@@ -244,6 +249,7 @@ struct state {
 	uint64_t underrun;
 
 	struct spa_dll dll;
+	double dll_bw_max;
 	double max_error;
 	double max_resync;
 	double err_avg, err_var, err_wdw;
@@ -309,7 +315,7 @@ void spa_alsa_emit_port_info(struct state *state, bool full);
 
 static inline void spa_alsa_parse_position(struct channel_map *map, const char *val, size_t len)
 {
-	spa_audio_parse_position(val, len, map->pos, &map->channels);
+	spa_audio_parse_position_n(val, len, map->pos, SPA_N_ELEMENTS(map->pos), &map->n_pos);
 }
 
 static inline uint32_t spa_alsa_parse_rates(uint32_t *rates, uint32_t max, const char *val, size_t len)

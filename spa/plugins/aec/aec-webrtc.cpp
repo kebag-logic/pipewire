@@ -119,14 +119,13 @@ static int webrtc_init2(void *object, const struct spa_dict *args,
 #elif defined(HAVE_WEBRTC1)
 	bool voice_detection = webrtc_get_spa_bool(args, "webrtc.voice_detection", true);
 	bool transient_suppression = webrtc_get_spa_bool(args, "webrtc.transient_suppression", true);
+	bool mobile_mode = webrtc_get_spa_bool(args, "webrtc.mobile_mode", false);
+#elif defined(HAVE_WEBRTC2)
+	bool mobile_mode = webrtc_get_spa_bool(args, "webrtc.mobile_mode", false);
 #endif
 	// Note: AGC seems to mess up with Agnostic Delay Detection, especially with speech,
 	// result in very poor performance, disable by default
 	bool gain_control = webrtc_get_spa_bool(args, "webrtc.gain_control", false);
-
-	// FIXME: Intelligibility enhancer is not currently supported
-	// This filter will modify playback buffer (when calling ProcessReverseStream), but now
-	// playback buffer modifications are discarded.
 
 #if defined(HAVE_WEBRTC)
 	webrtc::Config config;
@@ -175,6 +174,7 @@ static int webrtc_init2(void *object, const struct spa_dict *args,
 #elif defined(HAVE_WEBRTC1)
 	webrtc::AudioProcessing::Config config;
 	config.echo_canceller.enabled = true;
+	config.echo_canceller.mobile_mode = mobile_mode;
 	config.pipeline.multi_channel_capture = rec_info->channels > 1;
 	config.pipeline.multi_channel_render = play_info->channels > 1;
 	// FIXME: Example code enables both gain controllers, but that seems sus
@@ -191,6 +191,8 @@ static int webrtc_init2(void *object, const struct spa_dict *args,
 	config.voice_detection.enabled = voice_detection;
 #elif defined(HAVE_WEBRTC2)
 	webrtc::AudioProcessing::Config config;
+	config.echo_canceller.enabled = true;
+	config.echo_canceller.mobile_mode = mobile_mode;
 	config.pipeline.multi_channel_capture = rec_info->channels > 1;
 	config.pipeline.multi_channel_render = play_info->channels > 1;
 	// FIXME: Example code enables both gain controllers, but that seems sus
@@ -308,9 +310,6 @@ static int webrtc_run(void *object, const float *rec[], const float *play[], flo
 		for (size_t j = 0; j < impl->out_info.channels; j++)
 			impl->out_buffer[j] = out[j] + out_config.num_frames() * i;
 
-		/* FIXME: ProcessReverseStream may change the playback buffer, in which
-		* case we should use that, if we ever expose the intelligibility
-		* enhancer */
 		if ((res = impl->apm->ProcessReverseStream(impl->play_buffer.get(),
 					play_config, play_config, impl->play_buffer.get())) !=
 				webrtc::AudioProcessing::kNoError) {

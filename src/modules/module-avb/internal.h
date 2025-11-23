@@ -5,11 +5,11 @@
 #ifndef AVB_INTERNAL_H
 #define AVB_INTERNAL_H
 
+#include <pipewire/pipewire.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#include <pipewire/pipewire.h>
 
 struct server;
 struct avb_mrp;
@@ -19,6 +19,7 @@ struct avb_mrp;
 
 struct impl {
 	struct pw_loop *loop;
+	struct pw_timer_queue *timer_queue;
 	struct pw_context *context;
 	struct spa_hook context_listener;
 	struct pw_core *core;
@@ -61,7 +62,7 @@ struct server {
 	int ifindex;
 
 	struct spa_source *source;
-	struct spa_source *timer;
+	struct pw_timer timer;
 
 	struct spa_hook_list listener_list;
 

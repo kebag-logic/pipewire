@@ -2,6 +2,8 @@
 /* SPDX-FileCopyrightText: Copyright © 2021 Wim Taymans */
 /* SPDX-License-Identifier: MIT */
 
+#include "config.h"
+
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
@@ -13,8 +15,6 @@
 #include <signal.h>
 #include <limits.h>
 #include <math.h>
-
-#include "config.h"
 
 #include <spa/utils/result.h>
 #include <spa/utils/string.h>
@@ -49,7 +49,7 @@
  * ## Module Options
  *
  * - `jack.library`: the libjack to load, by default libjack.so.0 is searched in
- *			JACK_PATH directories and then some standard library paths.
+ *			LIBJACK_PATH directories and then some standard library paths.
  *			Can be an absolute path.
  * - `jack.server`: the name of the JACK server to tunnel to.
  * - `jack.client-name`: the name of the JACK client.
@@ -72,6 +72,7 @@
  *
  * - \ref PW_KEY_REMOTE_NAME
  * - \ref PW_KEY_AUDIO_CHANNELS
+ * - \ref SPA_KEY_AUDIO_LAYOUT
  * - \ref SPA_KEY_AUDIO_POSITION
  * - \ref PW_KEY_NODE_NAME
  * - \ref PW_KEY_NODE_DESCRIPTION
@@ -115,6 +116,7 @@
 PW_LOG_TOPIC_STATIC(mod_topic, "mod." NAME);
 #define PW_LOG_TOPIC_DEFAULT mod_topic
 
+#define MAX_CHANNELS	SPA_AUDIO_MAX_CHANNELS
 #define MAX_PORTS	128
 
 #define DEFAULT_CLIENT_NAME	"PipeWire"
@@ -157,7 +159,7 @@ struct port {
 struct volume {
 	bool mute;
 	uint32_t n_volumes;
-	float volumes[SPA_AUDIO_MAX_CHANNELS];
+	float volumes[MAX_CHANNELS];
 };
 
 struct stream {
@@ -252,9 +254,11 @@ static inline void fix_midi_event(uint8_t *data, size_t size)
 
 static void midi_to_jack(struct impl *impl, float *dst, float *src, uint32_t n_samples)
 {
-	struct spa_pod *pod;
-	struct spa_pod_sequence *seq;
-	struct spa_pod_control *c;
+	struct spa_pod_parser parser;
+	struct spa_pod_frame frame;
+	struct spa_pod_sequence seq;
+	struct spa_pod_control c;
+	const void *seq_body, *c_body;
 	int res;
 	bool in_sysex = false;
 	uint8_t tmp[n_samples * 4];
@@ -264,39 +268,41 @@ static void midi_to_jack(struct impl *impl, float *dst, float *src, uint32_t n_s
 	if (src == NULL)
 		return;
 
-	if ((pod = spa_pod_from_data(src, n_samples * sizeof(float), 0, n_samples * sizeof(float))) == NULL)
-		return;
-	if (!spa_pod_is_sequence(pod))
+	spa_pod_parser_init_from_data(&parser, src, n_samples * sizeof(float),
+			0, n_samples * sizeof(float));
+	if (spa_pod_parser_push_sequence_body(&parser, &frame, &seq, &seq_body) < 0)
 		return;
 
-	seq = (struct spa_pod_sequence*)pod;
-
-	SPA_POD_SEQUENCE_FOREACH(seq, c) {
+	while (spa_pod_parser_get_control_body(&parser, &c, &c_body) >= 0) {
 		int size;
+		size_t c_size = c.value.size;
+		uint64_t state = 0;
 
-		if (c->type != SPA_CONTROL_UMP)
+		if (c.type != SPA_CONTROL_UMP)
 			continue;
 
-		size = spa_ump_to_midi(SPA_POD_BODY(&c->value),
-				SPA_POD_BODY_SIZE(&c->value), &tmp[tmp_size], sizeof(tmp) - tmp_size);
-		if (size <= 0)
-			continue;
+		while (c_size > 0) {
+			size = spa_ump_to_midi((const uint32_t**)&c_body, &c_size,
+					&tmp[tmp_size], sizeof(tmp) - tmp_size, &state);
+			if (size <= 0)
+				break;
 
-		if (impl->fix_midi)
-			fix_midi_event(&tmp[tmp_size], size);
+			if (impl->fix_midi)
+				fix_midi_event(&tmp[tmp_size], size);
 
-		if (!in_sysex && tmp[tmp_size] == 0xf0)
-			in_sysex = true;
+			if (!in_sysex && tmp[tmp_size] == 0xf0)
+				in_sysex = true;
 
-		tmp_size += size;
-		if (in_sysex && tmp[tmp_size-1] == 0xf7)
-			in_sysex = false;
+			tmp_size += size;
+			if (in_sysex && tmp[tmp_size-1] == 0xf7)
+				in_sysex = false;
 
-		if (!in_sysex) {
-			if ((res = jack.midi_event_write(dst, c->offset, tmp, tmp_size)) < 0)
-				pw_log_warn("midi %p: can't write event: %s", dst,
-						spa_strerror(res));
-			tmp_size = 0;
+			if (!in_sysex) {
+				if ((res = jack.midi_event_write(dst, c.offset, tmp, tmp_size)) < 0)
+					pw_log_warn("midi %p: can't write event: %s", dst,
+							spa_strerror(res));
+				tmp_size = 0;
+			}
 		}
 	}
 }
@@ -509,6 +515,7 @@ static void make_stream_ports(struct stream *s)
 	for (i = 0; i < s->n_ports; i++) {
 		struct port *port = s->ports[i];
 		char *link_port = NULL;
+		char pos[8];
 
 		if (port != NULL) {
 			s->ports[i] = NULL;
@@ -518,8 +525,8 @@ static void make_stream_ports(struct stream *s)
 		}
 
 		if (i < s->info.channels) {
-			str = spa_debug_type_find_short_name(spa_type_audio_channel,
-					s->info.position[i]);
+			str = spa_type_audio_channel_make_short_name(
+					s->info.position[i], pos, sizeof(pos), NULL);
 			if (str)
 				snprintf(name, sizeof(name), "%s_%s", prefix, str);
 			else
@@ -540,7 +547,7 @@ static void make_stream_ports(struct stream *s)
 		} else {
 			snprintf(name, sizeof(name), "midi_%s_%d", prefix, i - s->info.channels + 1);
 			props = pw_properties_new(
-					PW_KEY_FORMAT_DSP, "32 bit raw UMP",
+					PW_KEY_FORMAT_DSP, "8 bit raw midi",
 					PW_KEY_PORT_NAME, name,
 					PW_KEY_PORT_PHYSICAL, "true",
 					NULL);
@@ -620,9 +627,9 @@ static void parse_props(struct stream *s, const struct spa_pod *param)
 		case SPA_PROP_channelVolumes:
 		{
 			uint32_t n;
-			float vols[SPA_AUDIO_MAX_CHANNELS];
+			float vols[MAX_CHANNELS];
 			if ((n = spa_pod_copy_array(&prop->value, SPA_TYPE_Float,
-					vols, SPA_AUDIO_MAX_CHANNELS)) > 0) {
+					vols, SPA_N_ELEMENTS(vols))) > 0) {
 				s->volume.n_volumes = n;
 				for (n = 0; n < s->volume.n_volumes; n++)
 					s->volume.volumes[n] = vols[n];
@@ -1046,14 +1053,15 @@ static const struct pw_impl_module_events module_events = {
 	.destroy = module_destroy,
 };
 
-static void parse_audio_info(const struct pw_properties *props, struct spa_audio_info_raw *info)
+static int parse_audio_info(const struct pw_properties *props, struct spa_audio_info_raw *info)
 {
-	spa_audio_info_raw_init_dict_keys(info,
+	return spa_audio_info_raw_init_dict_keys(info,
 			&SPA_DICT_ITEMS(
 				 SPA_DICT_ITEM(SPA_KEY_AUDIO_FORMAT, "F32P"),
 				 SPA_DICT_ITEM(SPA_KEY_AUDIO_POSITION, DEFAULT_POSITION)),
 			&props->dict,
 			SPA_KEY_AUDIO_CHANNELS,
+			SPA_KEY_AUDIO_LAYOUT,
 			SPA_KEY_AUDIO_POSITION, NULL);
 }
 
@@ -1163,6 +1171,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 		pw_properties_update_string(impl->source.props, str, strlen(str));
 
 	copy_props(impl, props, PW_KEY_AUDIO_CHANNELS);
+	copy_props(impl, props, SPA_KEY_AUDIO_LAYOUT);
 	copy_props(impl, props, SPA_KEY_AUDIO_POSITION);
 	copy_props(impl, props, PW_KEY_NODE_ALWAYS_PROCESS);
 	copy_props(impl, props, PW_KEY_NODE_GROUP);
@@ -1171,8 +1180,11 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	copy_props(impl, props, "jack.connect-audio");
 	copy_props(impl, props, "jack.connect-midi");
 
-	parse_audio_info(impl->source.props, &impl->source.info);
-	parse_audio_info(impl->sink.props, &impl->sink.info);
+	if ((res = parse_audio_info(impl->source.props, &impl->source.info)) < 0 ||
+	    (res = parse_audio_info(impl->sink.props, &impl->sink.info)) < 0) {
+		pw_log_error( "can't parse format: %s", spa_strerror(res));
+		goto error;
+	}
 
 	impl->source.n_midi = pw_properties_get_uint32(impl->source.props,
 			"midi.ports", DEFAULT_MIDI_PORTS);

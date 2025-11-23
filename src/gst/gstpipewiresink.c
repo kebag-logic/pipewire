@@ -363,6 +363,8 @@ gst_pipewire_sink_update_params (GstPipeWireSink *sink)
   pw_thread_loop_lock (sink->stream->core->loop);
   pw_stream_update_params (sink->stream->pwstream, port_params, n_params);
   pw_thread_loop_unlock (sink->stream->core->loop);
+
+  gst_structure_free (config);
 }
 
 static void
@@ -722,8 +724,8 @@ static void update_time (GstPipeWireSink *pwsink)
   struct spa_io_position *p = pwsink->stream->io_position;
   double err = 0.0, corr = 1.0;
   guint64 now;
-  double_t max_err = pwsink->rate * MAX_ERROR_MS/1000;
-  double_t resync_timeout = pwsink->rate * RESYNC_TIMEOUT_MS/1000;
+  double max_err = pwsink->rate * MAX_ERROR_MS/1000.0;
+  double resync_timeout = pwsink->rate * RESYNC_TIMEOUT_MS/1000.0;
 
   if (pwsink->first_buffer) {
     // use the target duration before the first buffer

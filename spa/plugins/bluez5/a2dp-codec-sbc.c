@@ -135,7 +135,8 @@ sbc_xq_channel_modes[] = {
 static int codec_select_config(const struct media_codec *codec, uint32_t flags,
 		const void *caps, size_t caps_size,
 		const struct media_codec_audio_info *info,
-		const struct spa_dict *settings, uint8_t config[A2DP_MAX_CAPS_SIZE])
+		const struct spa_dict *settings, uint8_t config[A2DP_MAX_CAPS_SIZE],
+		void **config_data)
 {
 	a2dp_sbc_t conf;
 	int bitpool, i;
@@ -221,8 +222,8 @@ static int codec_caps_preference_cmp(const struct media_codec *codec, uint32_t f
 	bool xq = (spa_streq(codec->name, "sbc_xq"));
 
 	/* Order selected configurations by preference */
-	res1 = codec->select_config(codec, 0, caps1, caps1_size, info, NULL, (uint8_t *)&conf1);
-	res2 = codec->select_config(codec, 0, caps2, caps2_size, info , NULL, (uint8_t *)&conf2);
+	res1 = codec->select_config(codec, 0, caps1, caps1_size, info, NULL, (uint8_t *)&conf1, NULL);
+	res2 = codec->select_config(codec, 0, caps2, caps2_size, info , NULL, (uint8_t *)&conf2, NULL);
 
 #define PREFER_EXPR(expr)			\
 		do {				\
@@ -346,7 +347,7 @@ static int codec_enum_config(const struct media_codec *codec, uint32_t flags,
         struct spa_pod_frame f[2];
 	struct spa_pod_choice *choice;
 	uint32_t i = 0;
-	uint32_t position[SPA_AUDIO_MAX_CHANNELS];
+	uint32_t position[2];
 
 	if (caps_size < sizeof(conf))
 		return -EINVAL;
@@ -599,7 +600,8 @@ static int codec_start_decode (void *data,
 	const struct rtp_header *header = src;
 	size_t header_size = sizeof(struct rtp_header) + sizeof(struct rtp_payload);
 
-	spa_return_val_if_fail (src_size > header_size, -EINVAL);
+	if (src_size <= header_size)
+		return -EINVAL;
 
 	if (seqnum)
 		*seqnum = ntohs(header->sequence_number);
@@ -634,6 +636,7 @@ static void codec_get_delay(void *data, uint32_t *encoder, uint32_t *decoder)
 
 const struct media_codec a2dp_codec_sbc = {
 	.id = SPA_BLUETOOTH_AUDIO_CODEC_SBC,
+	.kind = MEDIA_CODEC_A2DP,
 	.codec_id = A2DP_CODEC_SBC,
 	.name = "sbc",
 	.description = "SBC",
@@ -657,6 +660,7 @@ const struct media_codec a2dp_codec_sbc = {
 
 const struct media_codec a2dp_codec_sbc_xq = {
 	.id = SPA_BLUETOOTH_AUDIO_CODEC_SBC_XQ,
+	.kind = MEDIA_CODEC_A2DP,
 	.codec_id = A2DP_CODEC_SBC,
 	.name = "sbc_xq",
 	.description = "SBC-XQ",

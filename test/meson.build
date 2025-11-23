@@ -9,7 +9,6 @@ pwtest_deps = [
   pipewire_dep,
   mathlib,
   dl_lib,
-  cap_lib,
   epoll_shim_dep
 ]
 
@@ -53,6 +52,7 @@ test('test-pw-utils',
                'test-properties.c',
                'test-array.c',
                'test-map.c',
+               'test-mempool.c',
                'test-utils.c',
                include_directories: pwtest_inc,
                dependencies: [ spa_dep ],
@@ -112,6 +112,7 @@ test('test-spa',
     executable('test-spa',
                'test-spa-buffer.c',
                'test-spa-control.c',
+               'test-spa-format.c',
                'test-spa-json.c',
                'test-spa-utils.c',
                'test-spa-log.c',
@@ -135,10 +136,15 @@ endif
 summary({'pactl': pactl.found()}, bool_yn: true, section: 'Functional test programs')
 
 if default_sm == 'media-session' or default_sm == 'wireplumber'
+  test_functional_c_args = []
+  if get_option('b_sanitize').contains('address')
+    test_functional_c_args += ['-DHAVE_ASAN']
+  endif
   test('test-functional',
     executable('test-functional',
                'test-functional.c',
                include_directories: pwtest_inc,
+               c_args: [test_functional_c_args],
                dependencies: [ spa_dep ],
                link_with: pwtest_lib)
   )

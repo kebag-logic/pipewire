@@ -2,6 +2,8 @@
 /* SPDX-FileCopyrightText: Copyright © 2023 Wim Taymans <wim.taymans@gmail.com> */
 /* SPDX-License-Identifier: MIT */
 
+#include "config.h"
+
 #include <sys/socket.h>
 #include <arpa/inet.h>
 
@@ -17,8 +19,6 @@
 #include <spa/debug/types.h>
 #include <spa/debug/mem.h>
 #include <spa/debug/log.h>
-
-#include "config.h"
 
 #include <pipewire/pipewire.h>
 #include <pipewire/impl.h>
@@ -185,9 +185,9 @@ static const struct format_info *find_audio_format_info(const struct spa_audio_i
 	return NULL;
 }
 
-static void parse_audio_info(const struct pw_properties *props, struct spa_audio_info_raw *info)
+static int parse_audio_info(const struct pw_properties *props, struct spa_audio_info_raw *info)
 {
-	spa_audio_info_raw_init_dict_keys(info,
+	return spa_audio_info_raw_init_dict_keys(info,
 			&SPA_DICT_ITEMS(
 				 SPA_DICT_ITEM(SPA_KEY_AUDIO_FORMAT, DEFAULT_FORMAT),
 				 SPA_DICT_ITEM(SPA_KEY_AUDIO_RATE, SPA_STRINGIFY(DEFAULT_RATE)),
@@ -196,6 +196,7 @@ static void parse_audio_info(const struct pw_properties *props, struct spa_audio
 			SPA_KEY_AUDIO_FORMAT,
 			SPA_KEY_AUDIO_RATE,
 			SPA_KEY_AUDIO_CHANNELS,
+			SPA_KEY_AUDIO_LAYOUT,
 			SPA_KEY_AUDIO_POSITION, NULL);
 }
 
@@ -274,9 +275,14 @@ struct vban_stream *vban_stream_new(struct pw_core *core,
 
 	switch (impl->info.media_subtype) {
 	case SPA_MEDIA_SUBTYPE_raw:
-		parse_audio_info(props, &impl->info.info.raw);
-		if (SPA_FLAG_IS_SET(impl->info.info.raw.flags, SPA_AUDIO_FLAG_UNPOSITIONED))
+		if ((res = parse_audio_info(props, &impl->info.info.raw)) < 0) {
+			pw_log_error("can't parse format: %s", spa_strerror(res));
+			goto out;
+		}
+		if (SPA_FLAG_IS_SET(impl->info.info.raw.flags, SPA_AUDIO_FLAG_UNPOSITIONED)) {
 			default_layout(impl->info.info.raw.channels, impl->info.info.raw.position);
+			SPA_FLAG_CLEAR(impl->info.info.raw.flags, SPA_AUDIO_FLAG_UNPOSITIONED);
+		}
 		impl->stream_info = impl->info;
 		impl->format_info = find_audio_format_info(&impl->info);
 		if (impl->format_info == NULL) {
@@ -298,7 +304,7 @@ struct vban_stream *vban_stream_new(struct pw_core *core,
 		impl->header.format_bit = impl->format_info->format_bit;
 		if ((str = pw_properties_get(props, "sess.name")) == NULL)
 			str = "Stream1";
-		strcpy(impl->header.stream_name, str);
+		snprintf(impl->header.stream_name, sizeof(impl->header.stream_name), "%s", str);
 		break;
 	case SPA_MEDIA_SUBTYPE_control:
 		impl->stream_info = impl->info;
@@ -307,7 +313,7 @@ struct vban_stream *vban_stream_new(struct pw_core *core,
 			res = -EINVAL;
 			goto out;
 		}
-		pw_properties_set(props, PW_KEY_FORMAT_DSP, "32 bit raw UMP");
+		pw_properties_set(props, PW_KEY_FORMAT_DSP, "8 bit raw midi");
 		impl->stride = impl->format_info->size;
 		impl->rate = pw_properties_get_uint32(props, "midi.rate", 10000);
 		if (impl->rate == 0)
@@ -319,7 +325,7 @@ struct vban_stream *vban_stream_new(struct pw_core *core,
 		impl->header.format_bit = impl->format_info->format_bit;
 		if ((str = pw_properties_get(props, "sess.name")) == NULL)
 			str = "Midi1";
-		strcpy(impl->header.stream_name, str);
+		snprintf(impl->header.stream_name, sizeof(impl->header.stream_name), "%s", str);
 		break;
 	default:
 		spa_assert_not_reached();

@@ -31,6 +31,7 @@
 #include <spa/param/param.h>
 #include <spa/param/latency-utils.h>
 #include <spa/param/tag-utils.h>
+#include <spa/param/peer-utils.h>
 #include <spa/pod/filter.h>
 #include <spa/pod/dynamic.h>
 #include <spa/debug/types.h>
@@ -77,15 +78,16 @@ struct port {
 	uint64_t info_all;
 	struct spa_port_info info;
 
-#define IDX_EnumFormat	0
-#define IDX_Meta	1
-#define IDX_IO		2
-#define IDX_Format	3
-#define IDX_Buffers	4
-#define IDX_Latency	5
-#define IDX_Tag		6
-#define IDX_PeerFormats	7
-#define N_PORT_PARAMS	8
+#define IDX_EnumFormat		0
+#define IDX_Meta		1
+#define IDX_IO			2
+#define IDX_Format		3
+#define IDX_Buffers		4
+#define IDX_Latency		5
+#define IDX_Tag			6
+#define IDX_PeerEnumFormat	7
+#define IDX_PeerCapability	8
+#define N_PORT_PARAMS		9
 	struct spa_param_info params[N_PORT_PARAMS];
 
 	struct spa_pod *peer_format_pod;
@@ -240,7 +242,7 @@ static void emit_port_info(struct impl *this, struct port *port, bool full)
 				items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_PORT_IGNORE_LATENCY, "true");
 		} else if (PORT_IS_CONTROL(this, port->direction, port->id)) {
 			items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_PORT_NAME, "control");
-			items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_FORMAT_DSP, "32 bit raw UMP");
+			items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_FORMAT_DSP, "8 bit raw midi");
 		}
 		if (this->group_name[0] != '\0')
 			items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_PORT_GROUP, this->group_name);
@@ -472,10 +474,10 @@ static int init_port(struct impl *this, enum spa_direction direction, uint32_t p
 	port->latency[SPA_DIRECTION_INPUT] = SPA_LATENCY_INFO(SPA_DIRECTION_INPUT);
 	port->latency[SPA_DIRECTION_OUTPUT] = SPA_LATENCY_INFO(SPA_DIRECTION_OUTPUT);
 
+	port->info = SPA_PORT_INFO_INIT();
 	port->info.change_mask = port->info_all = SPA_PORT_CHANGE_MASK_FLAGS |
 			SPA_PORT_CHANGE_MASK_PROPS |
 			SPA_PORT_CHANGE_MASK_PARAMS;
-	port->info = SPA_PORT_INFO_INIT();
 	port->info.flags = SPA_PORT_FLAG_NO_REF |
 		SPA_PORT_FLAG_DYNAMIC_DATA;
 	port->params[IDX_EnumFormat] = SPA_PARAM_INFO(SPA_PARAM_EnumFormat, SPA_PARAM_INFO_READ);
@@ -485,7 +487,8 @@ static int init_port(struct impl *this, enum spa_direction direction, uint32_t p
 	port->params[IDX_Buffers] = SPA_PARAM_INFO(SPA_PARAM_Buffers, 0);
 	port->params[IDX_Latency] = SPA_PARAM_INFO(SPA_PARAM_Latency, SPA_PARAM_INFO_READWRITE);
 	port->params[IDX_Tag] = SPA_PARAM_INFO(SPA_PARAM_Tag, SPA_PARAM_INFO_READWRITE);
-	port->params[IDX_PeerFormats] = SPA_PARAM_INFO(SPA_PARAM_PeerFormats, SPA_PARAM_INFO_WRITE);
+	port->params[IDX_PeerEnumFormat] = SPA_PARAM_INFO(SPA_PARAM_PeerEnumFormat, SPA_PARAM_INFO_WRITE);
+	port->params[IDX_PeerCapability] = SPA_PARAM_INFO(SPA_PARAM_PeerCapability, SPA_PARAM_INFO_WRITE);
 	port->info.params = port->params;
 	port->info.n_params = N_PORT_PARAMS;
 
@@ -573,8 +576,7 @@ static int node_param_port_config(struct impl *this, uint32_t id, uint32_t index
 
 		if (dir->have_format) {
 			spa_pod_builder_prop(b, SPA_PARAM_PORT_CONFIG_format, 0);
-			spa_format_video_build(b, SPA_PARAM_PORT_CONFIG_format,
-					&dir->format);
+			spa_format_video_build(b, id, &dir->format);
 		}
 		*param = spa_pod_builder_pop(b, &f[0]);
 		return 1;
@@ -788,6 +790,9 @@ static int reconfigure_mode(struct impl *this, enum spa_param_port_config_mode m
 		init_port(this, direction, i, false, false, true);
 	}
 
+	/* emit all port info first, then the node props and flags */
+	emit_info(this, false);
+
 	this->info.change_mask |= SPA_NODE_CHANGE_MASK_FLAGS | SPA_NODE_CHANGE_MASK_PARAMS;
 	this->info.flags &= ~SPA_NODE_FLAG_NEED_CONFIGURE;
 	this->params[IDX_PortConfig].user++;
@@ -795,57 +800,69 @@ static int reconfigure_mode(struct impl *this, enum spa_param_port_config_mode m
 	return 0;
 }
 
-static int impl_node_set_param(void *object, uint32_t id, uint32_t flags,
-			       const struct spa_pod *param)
+static int node_set_param_port_config(struct impl *this, uint32_t flags,
+				const struct spa_pod *param)
 {
-	struct impl *this = object;
-
-	spa_return_val_if_fail(this != NULL, -EINVAL);
+	struct spa_video_info info = { 0, }, *infop = NULL;
+	struct spa_pod *format = NULL;
+	enum spa_direction direction;
+	enum spa_param_port_config_mode mode;
+	bool monitor = false, control = false;
+	int res;
 
 	if (param == NULL)
 		return 0;
 
-	switch (id) {
-	case SPA_PARAM_PortConfig:
-	{
-		struct spa_video_info info = { 0, }, *infop = NULL;
-		struct spa_pod *format = NULL;
-		enum spa_direction direction;
-		enum spa_param_port_config_mode mode;
-		bool monitor = false, control = false;
-		int res;
+	if (spa_pod_parse_object(param,
+			SPA_TYPE_OBJECT_ParamPortConfig, NULL,
+			SPA_PARAM_PORT_CONFIG_direction,	SPA_POD_Id(&direction),
+			SPA_PARAM_PORT_CONFIG_mode,		SPA_POD_Id(&mode),
+			SPA_PARAM_PORT_CONFIG_monitor,		SPA_POD_OPT_Bool(&monitor),
+			SPA_PARAM_PORT_CONFIG_control,		SPA_POD_OPT_Bool(&control),
+			SPA_PARAM_PORT_CONFIG_format,		SPA_POD_OPT_Pod(&format)) < 0)
+		return -EINVAL;
 
-		if (spa_pod_parse_object(param,
-				SPA_TYPE_OBJECT_ParamPortConfig, NULL,
-				SPA_PARAM_PORT_CONFIG_direction,	SPA_POD_Id(&direction),
-				SPA_PARAM_PORT_CONFIG_mode,		SPA_POD_Id(&mode),
-				SPA_PARAM_PORT_CONFIG_monitor,		SPA_POD_OPT_Bool(&monitor),
-				SPA_PARAM_PORT_CONFIG_control,		SPA_POD_OPT_Bool(&control),
-				SPA_PARAM_PORT_CONFIG_format,		SPA_POD_OPT_Pod(&format)) < 0)
+	if (format) {
+		if (!spa_pod_is_object_type(format, SPA_TYPE_OBJECT_Format))
 			return -EINVAL;
 
-		if (format) {
-			if (!spa_pod_is_object_type(format, SPA_TYPE_OBJECT_Format))
-				return -EINVAL;
-
-			if ((res = spa_format_video_parse(format, &info)) < 0)
-				return res;
-
-			infop = &info;
-		}
-
-		if ((res = reconfigure_mode(this, mode, direction, monitor, control, infop)) < 0)
+		if ((res = spa_format_video_parse(format, &info)) < 0)
 			return res;
-		break;
+
+		infop = &info;
 	}
+	return reconfigure_mode(this, mode, direction, monitor, control, infop);
+}
+
+static int node_set_param_props(struct impl *this, uint32_t flags,
+				const struct spa_pod *param)
+{
+	if (param == NULL)
+		return 0;
+
+	apply_props(this, param);
+	return 0;
+}
+static int impl_node_set_param(void *object, uint32_t id, uint32_t flags,
+			       const struct spa_pod *param)
+{
+	struct impl *this = object;
+	int res;
+
+	spa_return_val_if_fail(this != NULL, -EINVAL);
+
+	switch (id) {
+	case SPA_PARAM_PortConfig:
+		res = node_set_param_port_config(this, flags, param);
+		break;
 	case SPA_PARAM_Props:
-		apply_props(this, param);
+		res = node_set_param_props(this, flags, param);
 		break;
 	default:
 		return -ENOENT;
 	}
 	emit_info(this, false);
-	return 0;
+	return res;
 }
 
 static inline void free_decoder(struct impl *this)
@@ -1195,6 +1212,9 @@ static struct spa_pod *transform_format(struct impl *this, struct port *port, co
 			uint32_t n_vals, choice, *id_vals;
 			struct spa_pod *val = spa_pod_get_values(&prop->value, &n_vals, &choice);
 
+			if (n_vals < 1)
+				return 0;
+
 			if (!spa_pod_is_id(val))
 				return 0;
 
@@ -1215,29 +1235,50 @@ static int diff_value(struct impl *impl, uint32_t type, uint32_t size, const voi
 {
 	switch (type) {
 	case SPA_TYPE_None:
-		return 0;
+		return INT_MAX;
 	case SPA_TYPE_Bool:
+		if (size < sizeof(int32_t))
+			return INT_MAX;
 		return (!!*(int32_t *)v1) - (!!*(int32_t *)v2);
 	case SPA_TYPE_Id:
+		if (size < sizeof(uint32_t))
+			return INT_MAX;
 		return (*(uint32_t *)v1) != (*(uint32_t *)v2);
 	case SPA_TYPE_Int:
+		if (size < sizeof(int32_t))
+			return INT_MAX;
 		return *(int32_t *)v1 - *(int32_t *)v2;
 	case SPA_TYPE_Long:
+		if (size < sizeof(int64_t))
+			return INT_MAX;
 		return *(int64_t *)v1 - *(int64_t *)v2;
 	case SPA_TYPE_Float:
+		if (size < sizeof(float))
+			return INT_MAX;
 		return (int)(*(float *)v1 - *(float *)v2);
 	case SPA_TYPE_Double:
+		if (size < sizeof(double))
+			return INT_MAX;
 		return (int)(*(double *)v1 - *(double *)v2);
 	case SPA_TYPE_String:
+		if (size < 1 ||
+		    ((const char *)v1)[size - 1] != 0 ||
+		    ((const char *)v2)[size - 1] != 0)
+			return INT_MAX;
 		return strcmp((char *)v1, (char *)v2);
 	case SPA_TYPE_Bytes:
 		return memcmp((char *)v1, (char *)v2, size);
 	case SPA_TYPE_Rectangle:
 	{
-		const struct spa_rectangle *rec1 = (struct spa_rectangle *) v1,
-		    *rec2 = (struct spa_rectangle *) v2;
-		uint64_t n1 = ((uint64_t) rec1->width) * rec1->height;
-		uint64_t n2 = ((uint64_t) rec2->width) * rec2->height;
+		const struct spa_rectangle *rec1, *rec2;
+		uint64_t n1, n2;
+
+		if (size < sizeof(*rec1))
+			return INT_MAX;
+		rec1 = (struct spa_rectangle *) v1;
+		rec2 = (struct spa_rectangle *) v2;
+		n1 = ((uint64_t) rec1->width) * rec1->height;
+		n2 = ((uint64_t) rec2->width) * rec2->height;
 		if (rec1->width == rec2->width && rec1->height == rec2->height)
 			return 0;
 		else if (n1 < n2)
@@ -1245,15 +1286,19 @@ static int diff_value(struct impl *impl, uint32_t type, uint32_t size, const voi
 		else if (n1 > n2)
 			return n1 - n2;
 		else if (rec1->width == rec2->width)
-			return (int)rec1->height - (int)rec2->height;
+			return (int32_t)rec1->height - (int32_t)rec2->height;
 		else
-			return (int)rec1->width - (int)rec2->width;
+			return (int32_t)rec1->width - (int32_t)rec2->width;
 	}
 	case SPA_TYPE_Fraction:
 	{
-		const struct spa_fraction *f1 = (struct spa_fraction *) v1,
-		    *f2 = (struct spa_fraction *) v2;
+		const struct spa_fraction *f1, *f2;
 		uint64_t n1, n2;
+
+		if (size < sizeof(*f1))
+			return INT_MAX;
+		f1 = (struct spa_fraction *) v1;
+		f2 = (struct spa_fraction *) v2;
 		n1 = ((uint64_t) f1->num) * f2->denom;
 		n2 = ((uint64_t) f2->num) * f1->denom;
 		return (int) (n1 - n2);
@@ -1272,7 +1317,7 @@ static int diff_prop(struct impl *impl, struct spa_pod_prop *prop,
 	void *vals, *v, *best = NULL;
 	int res = INT_MAX;
 
-	if (SPA_POD_TYPE(val) != type)
+	if (n_vals < 1 || val->type != type)
 		return -EINVAL;
 
 	size = SPA_POD_BODY_SIZE(val);
@@ -1400,9 +1445,7 @@ static int port_param_enum_format(struct impl *this, struct port *port, uint32_t
 			*param = spa_pod_builder_add_object(b,
 					SPA_TYPE_OBJECT_Format, id,
 					SPA_FORMAT_mediaType,      SPA_POD_Id(SPA_MEDIA_TYPE_application),
-					SPA_FORMAT_mediaSubtype,   SPA_POD_Id(SPA_MEDIA_SUBTYPE_control),
-					SPA_FORMAT_CONTROL_types,  SPA_POD_CHOICE_FLAGS_Int(
-						(1u<<SPA_CONTROL_UMP) | (1u<<SPA_CONTROL_Properties)));
+					SPA_FORMAT_mediaSubtype,   SPA_POD_Id(SPA_MEDIA_SUBTYPE_control));
 			return 1;
 		} else if (other->have_format) {
 			/* peer format */
@@ -1463,9 +1506,7 @@ static int port_param_format(struct impl *this, struct port *port, uint32_t id,
 		*param = spa_pod_builder_add_object(b,
 			SPA_TYPE_OBJECT_Format,  id,
 			SPA_FORMAT_mediaType,    SPA_POD_Id(SPA_MEDIA_TYPE_application),
-			SPA_FORMAT_mediaSubtype, SPA_POD_Id(SPA_MEDIA_SUBTYPE_control),
-			SPA_FORMAT_CONTROL_types,  SPA_POD_Int(
-				(1u<<SPA_CONTROL_UMP) | (1u<<SPA_CONTROL_Properties)));
+			SPA_FORMAT_mediaSubtype, SPA_POD_Id(SPA_MEDIA_SUBTYPE_control));
 	} else {
 		*param = spa_format_video_build(b, id, &port->format);
 	}
@@ -1561,7 +1602,7 @@ static int port_param_tag(struct impl *this, struct port *port, uint32_t id,
 	return 0;
 }
 
-static int port_param_peer_formats(struct impl *this, struct port *port, uint32_t index,
+static int port_param_peer_enum_format(struct impl *this, struct port *port, uint32_t index,
 		const struct spa_pod **param, struct spa_pod_builder *b)
 {
 	if (index >= port->n_peer_formats)
@@ -1626,8 +1667,8 @@ impl_node_port_enum_params(void *object, int seq,
 	case SPA_PARAM_Tag:
 		res = port_param_tag(this, port, id, result.index, &param, &b);
 		break;
-	case SPA_PARAM_PeerFormats:
-		res = port_param_peer_formats(this, port, result.index, &param, &b);
+	case SPA_PARAM_PeerEnumFormat:
+		res = port_param_peer_enum_format(this, port, result.index, &param, &b);
 		break;
 	default:
 		return -ENOENT;
@@ -1942,7 +1983,7 @@ static int port_set_format(void *object,
 }
 
 
-static int port_set_peer_formats(void *object,
+static int port_set_peer_enum_format(void *object,
 			   enum spa_direction direction,
 			   uint32_t port_id,
 			   uint32_t flags,
@@ -1952,14 +1993,15 @@ static int port_set_peer_formats(void *object,
 	struct port *port, *oport;
 	int res = 0;
 	uint32_t i;
-	const struct spa_pod *format;
 	enum spa_direction other = SPA_DIRECTION_REVERSE(direction);
 	static uint32_t subtypes[] = {
 		SPA_MEDIA_SUBTYPE_raw,
 		SPA_MEDIA_SUBTYPE_mjpg,
 		SPA_MEDIA_SUBTYPE_h264 };
+	struct spa_peer_param_info info;
+	void *state = NULL;
 
-	spa_return_val_if_fail(spa_pod_is_struct(formats), -EINVAL);
+	spa_return_val_if_fail(spa_pod_is_object(formats), -EINVAL);
 
 	port = GET_PORT(this, direction, port_id);
 	oport = GET_PORT(this, other, port_id);
@@ -1975,9 +2017,10 @@ static int port_set_peer_formats(void *object,
 		port->peer_format_pod = spa_pod_copy(formats);
 
 		for (i = 0; i < SPA_N_ELEMENTS(subtypes); i++) {
-			SPA_POD_STRUCT_FOREACH(port->peer_format_pod, format) {
+			state = NULL;
+			while (spa_peer_param_parse(formats, &info, sizeof(info), &state) > 0) {
 				uint32_t media_type, media_subtype;
-				if (!spa_format_parse(format, &media_type, &media_subtype) ||
+				if (!spa_format_parse(info.param, &media_type, &media_subtype) ||
 				    media_type != SPA_MEDIA_TYPE_video ||
 				    media_subtype != subtypes[i])
 					continue;
@@ -1986,13 +2029,14 @@ static int port_set_peer_formats(void *object,
 		}
 		port->peer_formats = calloc(count, sizeof(struct spa_pod *));
 		for (i = 0; i < SPA_N_ELEMENTS(subtypes); i++) {
-			SPA_POD_STRUCT_FOREACH(port->peer_format_pod, format) {
+			state = NULL;
+			while (spa_peer_param_parse(port->peer_format_pod, &info, sizeof(info), &state) > 0) {
 				uint32_t media_type, media_subtype;
-				if (!spa_format_parse(format, &media_type, &media_subtype) ||
+				if (!spa_format_parse(info.param, &media_type, &media_subtype) ||
 				    media_type != SPA_MEDIA_TYPE_video ||
 				    media_subtype != subtypes[i])
 					continue;
-				port->peer_formats[port->n_peer_formats++] = format;
+				port->peer_formats[port->n_peer_formats++] = info.param;
 			}
 		}
 	}
@@ -2000,7 +2044,7 @@ static int port_set_peer_formats(void *object,
 	oport->params[IDX_EnumFormat].user++;
 	port->info.change_mask |= SPA_PORT_CHANGE_MASK_PARAMS;
 	port->params[IDX_EnumFormat].user++;
-	port->params[IDX_PeerFormats].user++;
+	port->params[IDX_PeerEnumFormat].user++;
 	return res;
 }
 
@@ -2030,8 +2074,9 @@ impl_node_port_set_param(void *object,
 	case SPA_PARAM_Format:
 		res = port_set_format(this, direction, port_id, flags, param);
 		break;
-	case SPA_PARAM_PeerFormats:
-		res = port_set_peer_formats(this, direction, port_id, flags, param);
+	case SPA_PARAM_PeerEnumFormat:
+		res = port_set_peer_enum_format(this, direction, port_id, flags, param);
+		break;
 		break;
 	default:
 		return -ENOENT;
@@ -2206,7 +2251,7 @@ impl_node_port_set_io(void *object,
 	case SPA_IO_Buffers:
 		if (this->data_loop) {
 			struct io_data d = { .port = port, .data = data, .size = size };
-			spa_loop_invoke(this->data_loop, do_set_port_io, 0, NULL, 0, true, &d);
+			spa_loop_locked(this->data_loop, do_set_port_io, 0, NULL, 0, &d);
 		}
 		else
 			port->io = data;

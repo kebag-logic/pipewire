@@ -2,6 +2,8 @@
 /* SPDX-FileCopyrightText: Copyright © 2021 Wim Taymans */
 /* SPDX-License-Identifier: MIT */
 
+#include "config.h"
+
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
@@ -10,8 +12,6 @@
 #include <fcntl.h>
 #include <dlfcn.h>
 #include <unistd.h>
-
-#include "config.h"
 
 #include <spa/param/latency-utils.h>
 #include <spa/param/tag-utils.h>
@@ -32,8 +32,8 @@ extern struct spa_handle_factory spa_filter_graph_factory;
  * \page page_module_filter_chain Filter-Chain
  *
  * The filter-chain allows you to create an arbitrary processing graph
- * from LADSPA, LV2 and builtin filters. This filter can be made into a
- * virtual sink/source or between any 2 nodes in the graph.
+ * from LADSPA, LV2, sofa, ffmpeg and builtin filters. This filter can be
+ * made into a virtual sink/source or between any 2 nodes in the graph.
  *
  * The filter chain is built with 2 streams, a capture stream providing
  * the input to the filter chain and a playback stream sending out the
@@ -95,7 +95,7 @@ extern struct spa_handle_factory spa_filter_graph_factory;
  * Nodes describe the processing filters in the graph. Use a tool like lv2ls
  * or listplugins to get a list of available plugins, labels and the port names.
  *
- * - `type` is one of `ladspa`, `lv2`, `builtin`, `sofa` or `ebur128`.
+ * - `type` is one of `ladspa`, `lv2`, `builtin`, `sofa`, `ebur128` of `ffmpeg`.
  * - `name` is the name for this node, you might need this later to refer to this node
  *    and its ports when setting controls or making links.
  * - `plugin` is the type specific plugin name.
@@ -103,16 +103,67 @@ extern struct spa_handle_factory spa_filter_graph_factory;
  *       name in the LADSPA plugin path.
  *    - For LV2, this is the plugin URI obtained with lv2ls.
  *    - For builtin, sofa and ebur128 this is ignored
+ *    - For ffmpeg this should be filtergraph
  * - `label` is the type specific filter inside the plugin.
  *    - For LADSPA this is the label
  *    - For LV2 this is unused
  *    - For builtin, sofa and ebur128 this is the name of the filter to use
+ *    - For ffmpeg this is an FFMpeg filtergraph description
  *
  * - `config` contains a filter specific configuration section. Some plugins need
  *            this. (convolver, sofa, delay, ...)
+ *    - For lv2, the config can contain a set of state key/value pairs. If the lv2
+ *      plugin supports the LV2_STATE__interface, these values will be provided for
+ *      the given keys.
  * - `control` contains the initial values for the control ports of the filter.
  *            normally these are given with the port name but it is also possible
  *            to give the control index as the key.
+ *
+ * Some examples ladspa and lv2 plugins:
+ *
+ *\code{.unparsed}
+ * filter.graph = {
+ *     nodes = [
+ *         {
+ *             # an example ladspa plugin
+ *             type = ladspa
+ *             name = pitch
+ *             plugin = "/usr/lib64/ladspa/ladspa-rubberband.so"
+ *             label = "rubberband-r3-pitchshifter-mono"
+ *             control = {
+ *                 # controls are using the ladspa port names as seen in analyseplugin
+ *                 "Semitones" = -3
+ *             }
+ *         }
+ *         {
+ *             # an example lv2 plugin
+ *             type = lv2
+ *             name = pitch
+ *             plugin = "http://breakfastquay.com/rdf/lv2-rubberband#mono"
+ *             control = {
+ *                 # controls are using the lv2 symbol as seen with lv2info
+ *                 "semitones" = -3
+ *             }
+ *         }
+ *         {
+ *             # an example lv2 plugin with a state
+ *             type = lv2
+ *             name = neural
+ *             plugin = "http://aidadsp.cc/plugins/aidadsp-bundle/rt-neural-generic"
+ *             control = {
+ *                 # use the port symbols as seen with lv2info
+ *                 PRESENCE = 1.0
+ *             }
+ *             config = {
+ *                 # the config contains state keys and values
+ *                 "http://aidadsp.cc/plugins/aidadsp-bundle/rt-neural-generic#json" =
+ *                     "/usr/lib64/lv2/rt-neural-generic.lv2/models/deer ink studios/tw40_blues_solo_deerinkstudios.json"
+ *             }
+ *         }
+ *     }
+ *     ...
+ * }
+ *\endcode
  *
  * ### Links
  *
@@ -160,8 +211,8 @@ extern struct spa_handle_factory spa_filter_graph_factory;
  *
  * ## Builtin filters
  *
- * There are some useful builtin filters available. You select them with the label
- * of the filter node.
+ * There are some useful builtin filters available. The type should be `builtin` and
+ * you select the specific builtin filter with the `label` of the filter node.
  *
  * ### Mixer
  *
@@ -354,7 +405,7 @@ extern struct spa_handle_factory spa_filter_graph_factory;
  *     - `/dirac` creates a [Dirac function](https://en.wikipedia.org/wiki/Dirac_delta_function) that
  *                 can be used as gain.
  *     - A filename to load as the IR. This needs to be a file format supported
- *               by sndfile.
+ *               by sndfile or be an inline IR with "/ir:<rate>,<value1>,<value2>".
  *     - [ filename, ... ] an array of filenames. The file with the closest samplerate match
  *               with the graph samplerate will be used.
  * - `offset`  The sample offset in the file as the start of the IR.
@@ -486,9 +537,12 @@ extern struct spa_handle_factory spa_filter_graph_factory;
  *
  * ### Max
  *
- * Use the `max` plugin if you need to select the max value of two channels.
+ * Use the `max` plugin if you need to select the max value of a number of input ports.
  *
- * It has two input ports "In 1" and "In 2" and one output port "Out".
+ * It has 8 input ports named "In 1" to "In 8" and one output port "Out".
+ *
+ * All input ports samples are checked to find the maximum value per sample. Unused
+ * input ports will be ignored and not cause overhead.
  *
  * ### dcblock
  *
@@ -512,9 +566,87 @@ extern struct spa_handle_factory spa_filter_graph_factory;
  * a volume ramp up or down. For more a more coarse volume ramp, the "Current" value
  * can be used in the `linear` plugin.
  *
- * ## SOFA filter
+ * ### Debug
  *
- * There is an optional builtin SOFA filter available.
+ * The `debug` plugin can be used to debug the audio and control data of other plugins.
+ *
+ * It has an "In" input port and an "Out" output data ports. The data from "In" will
+ * be copied to "Out" and the data will be dumped into the INFO log.
+ *
+ * There is also a "Control" input port and an "Notify" output control ports. The
+ * control from "Control" will be copied to "Notify" and the control value will be
+ * dumped into the INFO log.
+ *
+ * ### Pipe
+ *
+ * The `pipe` plugin can be used to filter the audio with another application using pipes
+ * for sending and receiving the raw audio.
+ *
+ * The application needs to consume raw float32 samples from stdin and produce filtered
+ * float32 samples on stdout.
+ *
+ * It has an "In" input port and an "Out" output data ports.
+ *
+ * The node requires a `config` section with extra configuration:
+ *
+ *\code{.unparsed}
+ * filter.graph = {
+ *     nodes = [
+ *         {
+ *             type   = builtin
+ *             name   = ...
+ *             label  = pipe
+ *             config = {
+ *                 command = "ffmpeg -f f32le -ac 1 -ar 48000 -blocksize 1024 -fflags nobuffer -i \"pipe:\"  \"-filter:a\" \"loudnorm=I=-18:TP=-3:LRA=4\" -f f32le -ac 1 -ar 48000 \"pipe:\""
+ *             }
+ *             ...
+ *         }
+ *     }
+ *     ...
+ * }
+ *\endcode
+ *
+ * - `command` the command to execute. It should consume samples from stdin and produce
+ *             samples on stdout.
+ *
+ * ### Zeroramp
+ *
+ * The `zeroramp` plugin can be used to detect unnatural silence parts in the audio
+ * stream and ramp the volume down or up when entering or leaving the silent area
+ * respectively.
+ * This can be used to avoid loud pops and clicks that occur when the sample values
+ * suddenly drop to zero or jump from zero to a large value caused by a pause,
+ * resume or an error of the stream. It only detect areas where the sample values
+ * are absolute zero values, such as those inserted when pausing a stream.
+ *
+ * It has an "In" input port and an "Out" output data ports.
+ *
+ * There are also "Gap (s)" and an "Duration (s)" input control ports. "Gap (s)"
+ * determines how long the silence gap is in seconds (default 0.000666) and
+ * "Duration (s)" determines how long the fade-in and fade-out should last
+ * (default 0.000666).
+ *
+ * ### Noisegate
+ *
+ * The `noisegate` plugin can be used to remove low volume noise.
+ *
+ * It has an "In" input port and an "Out" output data ports. Normally the input
+ * data is passed directly to the output.
+ *
+ * The "Level" control port can be used to control the measured volume of the "In"
+ * port. When not connected, a simple volume algorithm on the "In" port will be
+ * used.
+ *
+ * If the volume drops below "Close threshold", the noisegate will ramp down the
+ * volume to zero for a duration of "Release (s)" seconds. When the volume is above
+ * "Open threshold", the noisegate will ramp up the volume to 1 for a duration
+ * of "Attack (s)" seconds. The noise gate stays open for at least "Hold (s)"
+ * seconds before it can close again.
+ *
+ *
+ * ## SOFA filters
+ *
+ * There is an optional `sofa` type available (when compiled with `libmysofa`).
  *
  * ### Spatializer
  *
@@ -567,13 +699,15 @@ extern struct spa_handle_factory spa_filter_graph_factory;
  * - `Radius`    controls how far away the signal is as a value between 0 and 100.
  *               default is 1.0.
  *
- * ## EBUR128 filter
+ * ## EBUR128 filters
  *
- * There is an optional EBU R128 filter available.
+ * There is an optional EBU R128 plugin available (when compiled with
+ * `libebur128`) selected with the `ebur128` type. Filters in the plugin
+ * can be selected with the `label` field.
  *
  * ### ebur128
  *
- * The ebur128 plugin can be used to measure the loudness of a signal.
+ * The ebur128 filter can be used to measure the loudness of a signal.
  *
  * It has 7 input ports "In FL", "In FR", "In FC", "In UNUSED", "In SL", "In SR"
  * and "In DUAL MONO", corresponding to the different input channels for EBUR128.
@@ -637,23 +771,221 @@ extern struct spa_handle_factory spa_filter_graph_factory;
  *
  * ### lufs2gain
  *
- * The lufs2gain plugin can be used to convert LUFS control values to gain. It needs
+ * The lufs2gain filter can be used to convert LUFS control values to gain. It needs
  * a target LUFS control input to drive the conversion.
  *
  * It has 2 input control ports "LUFS" and "Target LUFS" and will produce 1 output
  * control value "Gain". This gain can be used as input for the builtin `linear`
- * node, for example, to adust the gain.
+ * filter, for example, to adust the gain.
  *
- * ### debug
  *
- * The debug plugin can be used to debug the audio and control data of other plugins.
+ * ## FFmpeg
  *
- * It has an "In" input port and an "Out" output data ports. The data from "In" will
- * be copied to "Out" and the data will be dumped into the INFO log.
+ * There is an optional FFmpeg filter available (when compiled with `libavfilter`)
+ * that can be selected with the `ffmpeg` type. Use the `plugin` field to select
+ * the plugin to use.
  *
- * There is also a "Control" input port and an "Notify" output control ports. The
- * control from "Control" will be copied to "Notify" and the control value will be
- * dumped into the INFO log.
+ * ### Filtergraph
+ *
+ * The filtergraph FFmpeg plugin is selected with the `filtergraph` plugin
+ * field in the node.
+ *
+ * The filtergraph filter allows you to specify an set of audio filters using
+ * the FFmpeg filtergraph syntax (https://ffmpeg.org/ffmpeg-filters.html).
+ *
+ * The `label` field should be used to describe the filtergraph in use.
+ *
+ * FFmpeg filtergraph input and output ports can have multiple channels. The
+ * filter-chain can split those into individual ports to use as input and output
+ * ports. For this, the ports in the filtergraph need to have a specific name
+ * convention, either `<port-name>_<channel-name>` or `<port-name>_<channel-layout>`.
+ *
+ * When a single channel is specified, the port can be referenced in inputs and
+ * outputs sections with `<name>:<port-name>_<channel-name>`. When a channel-layout
+ * is specified, each port name gets a `_<number>` appended, starting from 0 and
+ * counting up for each channel in the layout.
+ *
+ * The `filtergraph` plugin will automatically add format converters when the input
+ * port channel-layout, format or graph sample-rates don't match.
+ *
+ * Note that the FFmpeg filtergraph is not Real-time safe because it might do
+ * allocations from the processing thread. It is advised to run the filter-chain
+ * streams in async mode (`node.async = true`) to avoid interrupting the other
+ * RT threads.
+ *
+ * Some examples:
+ *
+ * The stereo ports are split into their channels with the `_0` and `_1` suffixes.
+ *
+ *\code{.unparsed}
+ * filter.graph = {
+ *     nodes = [
+ *         {
+ *             type   = ffmpeg
+ *             plugin = filtergraph
+ *             name   = filter
+ *             label = "[in_stereo]loudnorm=I=-18:TP=-3:LRA=4[out_stereo]"
+ *         }
+ *     }
+ *     inputs = [ "filter:in_stereo_0" "filter:in_stereo_1" ]
+ *     outputs = [ "filter:out_stereo_0" "filter:out_stereo_1" ]
+ *     ...
+ * }
+ *\endcode
+ *
+ * It is possible to have multiple input and output ports for the filtergraphs.
+ * In the next example, the ports have a single channel name and so don't have
+ * the `_0` suffix to identify them. This can be simplified by removing the `amerge`
+ * and `channelsplit` filters and using the `_stereo` suffix on port names to let
+ * PipeWire do the splitting and merging more efficiently.
+ *
+ *\code{.unparsed}
+ * filter.graph = {
+ *     nodes = [
+ *         {
+ *             type   = ffmpeg
+ *             plugin = filtergraph
+ *             name   = filter
+ *             label = "[in_FL][in_FR]amerge,extrastereo,channelsplit[out_FL][out_FR]"
+ *         }
+ *     }
+ *     inputs = [ "filter:in_FL" "filter:in_FR" ]
+ *     outputs = [ "filter:out_FL" "filter:out_FR" ]
+ *     ...
+ * }
+ *\endcode
+ *
+ * Here is a last example of a surround sound upmixer:
+ *
+ *\code{.unparsed}
+ * filter.graph = {
+ *     nodes = [
+ *         {
+ *             type   = ffmpeg
+ *             plugin = filtergraph
+ *             name   = filter
+ *             label = "[in_stereo]surround[out_5.1]"
+ *         }
+ *     }
+ *     inputs = [ "filter:in_FL" "filter:in_FR" ]
+ *     outputs = [ "filter:out_5.1_0" "filter:out_5.1_1" "filter:out_5.1_2"
+ *                 "filter:out_5.1_3" "filter:out_5.1_4" "filter:out_5.1_5" ]
+ *     ...
+ * }
+ *\endcode
+
+ * ## ONNX filters
+ *
+ * There is an optional ONNX filter available (when compiled with `libonnxruntime`)
+ * that can be selected with the `onnx` type. Use the `label` field to select
+ * the model to use and how to map the tensors to ports.
+ *
+ *\code{.unparsed}
+ * filter.graph = {
+ *     nodes = [
+ *         {
+ *             type   = onnx
+ *             name   = onnx
+ *             label = {
+ *                 filename = "..."
+ *                 blocksize = 512
+ *                 input-tensors = {
+ *                     "<name>" = {
+ *                         dimensions = [ ... ]
+ *                         #retain = 64
+ *                         data = "port:..."|"tensor:..."|"param:..."|"control:..."
+ *                     }
+ *                     ...
+ *                 }
+ *                 output-tensors = {
+ *                     "<name>" = {
+ *                         dimensions = [ ... ]
+ *                         #retain = 64
+ *                         data = "port:..."|"tensor:..."|"param:..."|"control:..."
+ *                     }
+ *                     ...
+ *                 }
+ *             }
+ *         }
+ *     }
+ *     ...
+ * }
+ *\endcode
+ *
+ * The label must contain an object with the configuration of the plugin.
+ *
+ * - `filename` the ONNX model to load. It must point to an existing onnx file.
+ * - `blocksize` the number of samples to give to the model. This depends on the model
+ *               and the input/output tensor sizes.
+ * - `input-tensors` an object of input tensors of the model and how they should be
+ *                   used. Unlisted tensors will not be used.
+ * - `output-tensors` an object of output tensors of the model and how they should be
+ *                   used. Unlisted tensors will not be used.
+ *
+ * The `input-tensors` and `output-tensors` configuration must contain an object with
+ * keys named after the tensors in the model and the value must be an object with the
+ * the following keys:
+ *
+ * - `dimensions` and array of dimensions of the tensors.
+ * - `retain` an optional key for input tensors. This will prepend the last `retain` samples
+ *            from the previous block to the input tensor. The size of the tensor should
+ *            therefore at least be blocksize + retain samples large.
+ * - `data` where the data for the tensor is comming from. There are different options
+ *          based on the value of this file, selected with a prefix:
+ *      - `port:<portname>` a new input/output port is created on the plugin with the
+ *                          name <portname> and the data for the tensor will be obtained
+ *                          or copied from/to the port data.
+ *      - `tensor:<tensorname>` the data of this tensor is copied from the given
+ *                              <tensorname>. You can use this to copy output state
+ *                              info to the input state, for example.
+ *      - `param:<paramname>` the data of this tensor is obtained from a parameter with
+ *                            <paramname>. Currently only `rate` is a valid paramname,
+ *                            which has the value of the filter samplerate.
+ *      - `control:<portname>` a new input/output control port is created and the tensor
+ *                             data will be obtained/copied from/to the control data.
+ *
+ * Here is an example of the silero VAD model:
+ *
+ *\code{.unparsed}
+ * filter.graph = {
+ *     nodes = [
+ *         {
+ *             type   = onnx
+ *             name = onnx
+ *             label = {
+ *                 filename = "/home/wim/src/silero-vad/src/silero_vad/data/silero_vad.onnx"
+ *                 blocksize = 512
+ *                 input-tensors = {
+ *                     "input" = {
+ *                         dimensions = [ 1, 576 ]
+ *                         retain = 64
+ *                         data = "port:input"
+ *                     }
+ *                     "state" = {
+ *                         dimensions = [ 2, 1, 128 ]
+ *                         data = "tensor:stateN"
+ *                     }
+ *                     "sr" = {
+ *                         dimensions = [ 1 ]
+ *                         data = "param:rate"
+ *                     }
+ *                 }
+ *                 output-tensors = {
+ *                     "output" = {
+ *                         dimensions = [ 1, 1 ]
+ *                         data = "control:speech"
+ *                     }
+ *                     "stateN" = {
+ *                         dimensions = [ 2, 1, 128 ]
+ *                     }
+ *                 }
+ *             }
+ *         }
+ *         ...
+ *    ]
+ *    ....
+ * }
+ *\endcode
  *
  * ## General options
  *
@@ -663,6 +995,7 @@ extern struct spa_handle_factory spa_filter_graph_factory;
  * - \ref PW_KEY_REMOTE_NAME
  * - \ref PW_KEY_AUDIO_RATE
  * - \ref PW_KEY_AUDIO_CHANNELS
+ * - \ref SPA_KEY_AUDIO_LAYOUT
  * - \ref SPA_KEY_AUDIO_POSITION
  * - \ref PW_KEY_MEDIA_NAME
  * - \ref PW_KEY_NODE_LATENCY
@@ -860,6 +1193,7 @@ struct impl {
 	struct spa_hook graph_listener;
 	uint32_t n_inputs;
 	uint32_t n_outputs;
+	bool graph_active;
 
 	struct spa_latency_info latency[2];
 	struct spa_process_latency_info process_latency;
@@ -882,6 +1216,8 @@ static void capture_process(void *d)
 			struct pw_buffer *t;
 			if ((t = pw_stream_dequeue_buffer(impl->capture)) == NULL)
 				break;
+			/* playback part is not ready, consume, discard and recycle
+			 * the capture buffers */
 			pw_stream_queue_buffer(impl->capture, t);
 		}
 	}
@@ -948,7 +1284,8 @@ static void playback_process(void *d)
 	pw_log_trace_fp("%p: stride:%d size:%d requested:%"PRIu64" (%"PRIu64")", impl,
 			stride, data_size, out->requested, out->requested * stride);
 
-	spa_filter_graph_process(impl->graph, cin, cout, data_size / sizeof(float));
+	if (impl->graph_active)
+		spa_filter_graph_process(impl->graph, cin, cout, data_size / sizeof(float));
 
 done:
 	if (in != NULL)
@@ -957,52 +1294,100 @@ done:
 		pw_stream_queue_buffer(impl->playback, out);
 }
 
-static void param_latency_changed(struct impl *impl, const struct spa_pod *param,
-		enum spa_direction direction)
+static int activate_graph(struct impl *impl)
+{
+	char rate[64];
+	int res;
+
+	if (impl->graph_active)
+		return 0;
+
+	snprintf(rate, sizeof(rate), "%lu", impl->rate);
+	res = spa_filter_graph_activate(impl->graph, &SPA_DICT_ITEMS(
+				SPA_DICT_ITEM(SPA_KEY_AUDIO_RATE, rate)));
+
+	if (res >= 0) {
+		struct pw_loop *data_loop = pw_stream_get_data_loop(impl->playback);
+		pw_loop_lock(data_loop);
+		impl->graph_active = true;
+		pw_loop_unlock(data_loop);
+	}
+	return res;
+}
+
+static int deactivate_graph(struct impl *impl)
+{
+	struct pw_loop *data_loop;
+
+	if (!impl->graph_active)
+		return 0;
+
+	data_loop = pw_stream_get_data_loop(impl->playback);
+
+	pw_loop_lock(data_loop);
+	impl->graph_active = false;
+	pw_loop_unlock(data_loop);
+
+	return spa_filter_graph_deactivate(impl->graph);
+}
+
+static int reset_graph(struct impl *impl)
+{
+	struct pw_loop *data_loop = pw_stream_get_data_loop(impl->playback);
+	int res;
+	bool old_active = impl->graph_active;
+
+	pw_loop_lock(data_loop);
+	impl->graph_active = false;
+	pw_loop_unlock(data_loop);
+
+	res = spa_filter_graph_reset(impl->graph);
+
+	pw_loop_lock(data_loop);
+	impl->graph_active = old_active;
+	pw_loop_unlock(data_loop);
+
+	return res;
+}
+
+static void update_latency(struct impl *impl, enum spa_direction direction, bool process)
 {
 	struct spa_latency_info latency;
 	uint8_t buffer[1024];
 	struct spa_pod_builder b;
-	const struct spa_pod *params[1];
+	const struct spa_pod *params[2];
+	uint32_t n_params = 0;
+	struct pw_stream *s = direction == SPA_DIRECTION_OUTPUT ?
+		impl->playback : impl->capture;
+
+	spa_pod_builder_init(&b, buffer, sizeof(buffer));
+	latency = impl->latency[direction];
+	spa_process_latency_info_add(&impl->process_latency, &latency);
+	params[n_params++] = spa_latency_build(&b, SPA_PARAM_Latency, &latency);
+
+	if (process) {
+		params[n_params++] = spa_process_latency_build(&b,
+				SPA_PARAM_ProcessLatency, &impl->process_latency);
+	}
+	pw_stream_update_params(s, params, n_params);
+}
+
+static void update_latencies(struct impl *impl, bool process)
+{
+	update_latency(impl, SPA_DIRECTION_INPUT, process);
+	update_latency(impl, SPA_DIRECTION_OUTPUT, process);
+}
+
+static void param_latency_changed(struct impl *impl, const struct spa_pod *param,
+		enum spa_direction direction)
+{
+	struct spa_latency_info latency;
 
 	if (param == NULL || spa_latency_parse(param, &latency) < 0)
 		return;
 
 	impl->latency[latency.direction] = latency;
-
-	spa_pod_builder_init(&b, buffer, sizeof(buffer));
-	if (latency.direction != direction)
-		spa_process_latency_info_add(&impl->process_latency, &latency);
-	params[0] = spa_latency_build(&b, SPA_PARAM_Latency, &latency);
-
-	if (latency.direction == SPA_DIRECTION_INPUT)
-		pw_stream_update_params(impl->capture, params, 1);
-	else
-		pw_stream_update_params(impl->playback, params, 1);
-}
-
-static void update_process_latency(struct impl *impl)
-{
-	uint8_t buffer[1024];
-	struct spa_pod_builder b;
-	struct spa_latency_info latency;
-	const struct spa_pod *params[2];
-
-	spa_pod_builder_init(&b, buffer, sizeof(buffer));
-	latency = impl->latency[SPA_DIRECTION_INPUT];
-	spa_process_latency_info_add(&impl->process_latency, &latency);
-	params[0] = spa_latency_build(&b, SPA_PARAM_Latency, &latency);
-
-	if (impl->playback)
-		pw_stream_update_params(impl->playback, params, 1);
-
-	latency = impl->latency[SPA_DIRECTION_OUTPUT];
-	spa_process_latency_info_add(&impl->process_latency, &latency);
-	params[0] = spa_latency_build(&b, SPA_PARAM_Latency, &latency);
-	params[1] = spa_process_latency_build(&b, SPA_PARAM_ProcessLatency, &impl->process_latency);
-
-	if (impl->capture)
-		pw_stream_update_params(impl->capture, params, 2);
+	update_latency(impl, latency.direction, false);
 }
 
 static void param_process_latency_changed(struct impl *impl, const struct spa_pod *param,
@@ -1014,9 +1399,11 @@ static void param_process_latency_changed(struct impl *impl, const struct spa_po
 		spa_zero(process_latency);
 	else if (spa_process_latency_parse(param, &process_latency) < 0)
 		return;
+	if (spa_process_latency_info_compare(&impl->process_latency, &process_latency) == 0)
+		return;
 
 	impl->process_latency = process_latency;
-	update_process_latency(impl);
+	update_latencies(impl, true);
 }
 
 static void param_tag_changed(struct impl *impl, const struct spa_pod *param,
@@ -1035,18 +1422,14 @@ static void param_tag_changed(struct impl *impl, const struct spa_pod *param,
 		pw_stream_update_params(impl->playback, params, 1);
 }
 
-static void state_changed(void *data, enum pw_stream_state old,
+static void capture_state_changed(void *data, enum pw_stream_state old,
 		enum pw_stream_state state, const char *error)
 {
 	struct impl *impl = data;
-	struct spa_filter_graph *graph = impl->graph;
-	int res;
 
 	switch (state) {
 	case PW_STREAM_STATE_PAUSED:
-		pw_stream_flush(impl->playback, false);
 		pw_stream_flush(impl->capture, false);
-		spa_filter_graph_reset(graph);
 		break;
 	case PW_STREAM_STATE_UNCONNECTED:
 		pw_log_info("module %p: unconnected", impl);
@@ -1056,34 +1439,10 @@ static void state_changed(void *data, enum pw_stream_state old,
 		pw_log_info("module %p: error: %s", impl, error);
 		break;
 	case PW_STREAM_STATE_STREAMING:
-	{
-		uint32_t target = impl->info.rate;
-		if (target == 0)
-			target = impl->position ?
-				impl->position->clock.target_rate.denom : DEFAULT_RATE;
-		if (target == 0) {
-			res = -EINVAL;
-			goto error;
-		}
-		if (impl->rate != target) {
-			char rate[64];
-			impl->rate = target;
-			snprintf(rate, sizeof(rate), "%lu", impl->rate);
-			spa_filter_graph_deactivate(graph);
-			if ((res = spa_filter_graph_activate(graph,
-					&SPA_DICT_ITEMS(
-						SPA_DICT_ITEM(SPA_KEY_AUDIO_RATE, rate)))) < 0)
-				goto error;
-		}
-		break;
-	}
 	default:
 		break;
 	}
 	return;
-error:
-	pw_stream_set_error(impl->capture, res, "can't start graph: %s",
-			spa_strerror(res));
 }
 
 static void io_changed(void *data, uint32_t id, void *area, uint32_t size)
@@ -1101,7 +1460,6 @@ static void io_changed(void *data, uint32_t id, void *area, uint32_t size)
 static void param_changed(struct impl *impl, uint32_t id, const struct spa_pod *param,
 		enum spa_direction direction, struct pw_stream *stream, struct pw_stream *other)
 {
-	struct spa_filter_graph *graph = impl->graph;
 	int res;
 
 	switch (id) {
@@ -1110,7 +1468,9 @@ static void param_changed(struct impl *impl, uint32_t id, const struct spa_pod *
 		struct spa_audio_info_raw info;
 		spa_zero(info);
 		if (param == NULL) {
-			spa_filter_graph_deactivate(graph);
+			pw_log_info("module %p: filter deactivate", impl);
+			if (direction == SPA_DIRECTION_OUTPUT)
+				deactivate_graph(impl);
 			impl->rate = 0;
 		} else {
 			if ((res = spa_format_audio_raw_parse(param, &info)) < 0)
@@ -1151,9 +1511,54 @@ static const struct pw_stream_events in_stream_events = {
 	.destroy = capture_destroy,
 	.process = capture_process,
 	.io_changed = io_changed,
-	.state_changed = state_changed,
+	.state_changed = capture_state_changed,
 	.param_changed = capture_param_changed
 };
+
+static void playback_state_changed(void *data, enum pw_stream_state old,
+		enum pw_stream_state state, const char *error)
+{
+	struct impl *impl = data;
+	int res;
+
+	switch (state) {
+	case PW_STREAM_STATE_PAUSED:
+		pw_stream_flush(impl->playback, false);
+		reset_graph(impl);
+		break;
+	case PW_STREAM_STATE_UNCONNECTED:
+		pw_log_info("module %p: unconnected", impl);
+		pw_impl_module_schedule_destroy(impl->module);
+		break;
+	case PW_STREAM_STATE_ERROR:
+		pw_log_info("module %p: error: %s", impl, error);
+		break;
+	case PW_STREAM_STATE_STREAMING:
+	{
+		uint32_t target = impl->info.rate;
+		if (target == 0)
+			target = impl->position ?
+				impl->position->clock.target_rate.denom : DEFAULT_RATE;
+		if (target == 0) {
+			res = -EINVAL;
+			goto error;
+		}
+		if (impl->rate != target) {
+			impl->rate = target;
+			deactivate_graph(impl);
+		}
+		if ((res = activate_graph(impl)) < 0)
+			goto error;
+		break;
+	}
+	default:
+		break;
+	}
+	return;
+error:
+	pw_stream_set_error(impl->capture, res, "can't start graph: %s",
+			spa_strerror(res));
+}
 
 static void playback_param_changed(void *data, uint32_t id, const struct spa_pod *param)
 {
@@ -1173,7 +1578,7 @@ static const struct pw_stream_events out_stream_events = {
 	.destroy = playback_destroy,
 	.process = playback_process,
 	.io_changed = io_changed,
-	.state_changed = state_changed,
+	.state_changed = playback_state_changed,
 	.param_changed = playback_param_changed,
 };
 
@@ -1318,8 +1723,10 @@ static void graph_info(void *object, const struct spa_filter_graph_info *info)
 		if (spa_streq(k, "latency")) {
 			double latency;
 			if (spa_atod(s, &latency)) {
-				impl->process_latency.rate = (int32_t)latency;
-				update_process_latency(impl);
+				if (impl->process_latency.rate != (int32_t)latency) {
+					impl->process_latency.rate = (int32_t)latency;
+					update_latencies(impl, true);
+				}
 			}
 		}
 	}
@@ -1426,13 +1833,15 @@ static const struct pw_impl_module_events module_events = {
 	.destroy = module_destroy,
 };
 
-static void parse_audio_info(struct pw_properties *props, struct spa_audio_info_raw *info)
+static int parse_audio_info(struct pw_properties *props, struct spa_audio_info_raw *info)
 {
-	spa_audio_info_raw_init_dict_keys(info,
+	return spa_audio_info_raw_init_dict_keys(info,
 			&SPA_DICT_ITEMS(
 				 SPA_DICT_ITEM(SPA_KEY_AUDIO_FORMAT, "F32P")),
 			&props->dict,
+			SPA_KEY_AUDIO_RATE,
 			SPA_KEY_AUDIO_CHANNELS,
+			SPA_KEY_AUDIO_LAYOUT,
 			SPA_KEY_AUDIO_POSITION, NULL);
 }
 
@@ -1490,6 +1899,8 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 
 	impl->module = module;
 	impl->context = context;
+	impl->latency[SPA_DIRECTION_INPUT] = SPA_LATENCY_INFO(SPA_DIRECTION_INPUT);
+	impl->latency[SPA_DIRECTION_OUTPUT] = SPA_LATENCY_INFO(SPA_DIRECTION_OUTPUT);
 
 	if (pw_properties_get(props, PW_KEY_NODE_GROUP) == NULL)
 		pw_properties_setf(props, PW_KEY_NODE_GROUP, "filter-chain-%u-%u", pid, id);
@@ -1509,6 +1920,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 
 	copy_props(impl, props, PW_KEY_AUDIO_RATE);
 	copy_props(impl, props, PW_KEY_AUDIO_CHANNELS);
+	copy_props(impl, props, SPA_KEY_AUDIO_LAYOUT);
 	copy_props(impl, props, SPA_KEY_AUDIO_POSITION);
 	copy_props(impl, props, PW_KEY_NODE_DESCRIPTION);
 	copy_props(impl, props, PW_KEY_NODE_GROUP);
@@ -1518,8 +1930,11 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	copy_props(impl, props, PW_KEY_MEDIA_NAME);
 	copy_props(impl, props, "resample.prefill");
 
-	parse_audio_info(impl->capture_props, &impl->capture_info);
-	parse_audio_info(impl->playback_props, &impl->playback_info);
+	if ((res = parse_audio_info(impl->capture_props, &impl->capture_info)) < 0 ||
+	    (res = parse_audio_info(impl->playback_props, &impl->playback_info)) < 0) {
+		pw_log_error( "can't parse format: %s", spa_strerror(res));
+		goto error;
+	}
 
 	if (!impl->capture_info.rate && !impl->playback_info.rate) {
 		if (pw_properties_get(impl->playback_props, "resample.disable") == NULL)

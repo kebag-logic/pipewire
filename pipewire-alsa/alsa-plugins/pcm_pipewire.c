@@ -31,6 +31,7 @@ PW_LOG_TOPIC_STATIC(alsa_log_topic, "alsa.pcm");
 #define MAX_BUFFERS	64u
 
 #define MAX_RATE	(48000*8)
+#define MAX_CHANNELS	SPA_AUDIO_MAX_CHANNELS
 
 #define MIN_PERIOD	64
 
@@ -616,6 +617,7 @@ static int snd_pcm_pipewire_stop(snd_pcm_ioplug_t *io)
 	if (pw->activated && pw->stream != NULL) {
 		pw_stream_set_active(pw->stream, false);
 		pw->activated = false;
+		pw_thread_loop_signal(pw->main_loop, false);
 	}
 	pw_thread_loop_unlock(pw->main_loop);
 	return 0;
@@ -641,7 +643,7 @@ static int snd_pcm_pipewire_pause(snd_pcm_ioplug_t * io, int enable)
 #define _FORMAT_BE(p, fmt)  p ? SPA_AUDIO_FORMAT_UNKNOWN : SPA_AUDIO_FORMAT_ ## fmt ## _OE
 #endif
 
-static int set_default_channels(uint32_t channels, uint32_t position[SPA_AUDIO_MAX_CHANNELS])
+static int set_default_channels(uint32_t channels, uint32_t position[MAX_CHANNELS])
 {
 	switch (channels) {
 	case 8:
@@ -914,12 +916,16 @@ static int snd_pcm_pipewire_set_chmap(snd_pcm_ioplug_t * io,
 	default:
 		return -EINVAL;
 	}
+	if (map->channels > MAX_CHANNELS)
+		return -ENOTSUP;
+
 	for (i = 0; i < map->channels; i++) {
+		char buf[8];
 		position[i] = chmap_to_channel(map->pos[i]);
 		pw_log_debug("map %d: %s / %s", i,
 				snd_pcm_chmap_name(map->pos[i]),
-				spa_debug_type_find_short_name(spa_type_audio_channel,
-					position[i]));
+				spa_type_audio_channel_make_short_name(position[i],
+					buf, sizeof(buf), "UNK"));
 	}
 	return 1;
 }
@@ -1096,7 +1102,7 @@ struct param_info infos[] = {
 	{ "alsa.rate", SND_PCM_IOPLUG_HW_RATE, TYPE_MIN_MAX,
 		{ 1, MAX_RATE }, 2, collect_int },
 	{ "alsa.channels", SND_PCM_IOPLUG_HW_CHANNELS, TYPE_MIN_MAX,
-		{ 1, SPA_AUDIO_MAX_CHANNELS }, 2, collect_int },
+		{ 1, MAX_CHANNELS }, 2, collect_int },
 	{ "alsa.buffer-bytes", SND_PCM_IOPLUG_HW_BUFFER_BYTES, TYPE_MIN_MAX,
 		{ MIN_BUFFER_BYTES, MAX_BUFFER_BYTES }, 2, collect_int },
 	{ "alsa.period-bytes", SND_PCM_IOPLUG_HW_PERIOD_BYTES, TYPE_MIN_MAX,

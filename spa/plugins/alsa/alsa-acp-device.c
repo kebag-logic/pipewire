@@ -38,6 +38,7 @@
 extern struct spa_i18n *acp_i18n;
 
 #define MAX_POLL	16
+#define MAX_CHANNELS	SPA_AUDIO_MAX_CHANNELS
 
 #define DEFAULT_DEVICE		"hw:0"
 #define DEFAULT_AUTO_PROFILE	true
@@ -155,12 +156,13 @@ static int emit_node(struct impl *this, struct acp_device *dev)
 	const struct acp_dict_item *it;
 	uint32_t n_items, i;
 	char device_name[128], path[210], channels[16], ch[12], routes[16];
-	char card_index[16], card_name[64], *p;
-	char positions[SPA_AUDIO_MAX_CHANNELS * 12];
+	char card_index[16], card_name[64];
+	char positions[MAX_CHANNELS * 12];
 	char codecs[512];
 	struct spa_device_object_info info;
 	struct acp_card *card = this->card;
-	const char *stream, *card_id;
+	const char *stream, *card_id, *bus;
+	struct spa_strbuf b;
 
 	info = SPA_DEVICE_OBJECT_INFO_INIT();
 	info.type = SPA_TYPE_INTERFACE_Node;
@@ -175,7 +177,7 @@ static int emit_node(struct impl *this, struct acp_device *dev)
 
 	info.change_mask = SPA_DEVICE_OBJECT_CHANGE_MASK_PROPS;
 
-	items = alloca((dev->props.n_items + 11) * sizeof(*items));
+	items = alloca((dev->props.n_items + 12) * sizeof(*items));
 	n_items = 0;
 
 	snprintf(card_index, sizeof(card_index), "%d", card->index);
@@ -193,15 +195,19 @@ static int emit_node(struct impl *this, struct acp_device *dev)
 	items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_API_ALSA_PCM_STREAM, stream);
 	items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_PORT_GROUP, stream);
 	items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_DEVICE_ICON_NAME, "audio-card-analog");
+	bus = acp_dict_lookup(&card->props, SPA_KEY_DEVICE_BUS);
+	items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_DEVICE_BUS, bus);
 
 	snprintf(channels, sizeof(channels), "%d", dev->format.channels);
 	items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_AUDIO_CHANNELS, channels);
 
-	p = positions;
+	spa_strbuf_init(&b, positions, sizeof(positions));
+	spa_strbuf_append(&b, "[");
 	for (i = 0; i < dev->format.channels; i++) {
-		p += snprintf(p, 12, "%s%s", i == 0 ? "" : ",",
+		spa_strbuf_append(&b, "%s%s", i == 0 ? " " : ", ",
 				acp_channel_str(ch, sizeof(ch), dev->format.map[i]));
 	}
+	spa_strbuf_append(&b, " ]");
 	items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_AUDIO_POSITION, positions);
 
 	if (dev->n_codecs > 0) {
@@ -671,8 +677,8 @@ static int apply_device_props(struct impl *this, struct acp_device *dev, struct 
 	struct spa_pod_prop *prop;
 	struct spa_pod_object *obj = (struct spa_pod_object *) props;
 	int changed = 0;
-	float volumes[SPA_AUDIO_MAX_CHANNELS];
-	uint32_t channels[SPA_AUDIO_MAX_CHANNELS];
+	float volumes[MAX_CHANNELS];
+	uint32_t channels[MAX_CHANNELS];
 	uint32_t n_volumes = 0;
 
 	if (!spa_pod_is_object_type(props, SPA_TYPE_OBJECT_Props))
@@ -694,13 +700,13 @@ static int apply_device_props(struct impl *this, struct acp_device *dev, struct 
 			break;
 		case SPA_PROP_channelVolumes:
 			if ((n_volumes = spa_pod_copy_array(&prop->value, SPA_TYPE_Float,
-					volumes, SPA_AUDIO_MAX_CHANNELS)) > 0) {
+					volumes, SPA_N_ELEMENTS(volumes))) > 0) {
 				changed++;
 			}
 			break;
 		case SPA_PROP_channelMap:
 			if (spa_pod_copy_array(&prop->value, SPA_TYPE_Id,
-					channels, SPA_AUDIO_MAX_CHANNELS) > 0) {
+					channels, SPA_N_ELEMENTS(channels)) > 0) {
 				changed++;
 			}
 			break;

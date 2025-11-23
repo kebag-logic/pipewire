@@ -33,7 +33,7 @@ POD's can contain a number of basic SPA types:
 - `SPA_TYPE_Bytes`: A byte array.
 - `SPA_TYPE_Rectangle`: A rectangle with width and height.
 - `SPA_TYPE_Fraction`: A fraction with numerator and denominator.
-- `SPA_TYPE_Bitmap`: An array of bits.
+- `SPA_TYPE_Bitmap`: An array of bits. Deprecated and unused.
 
 POD's can be grouped together in these container types:
 
@@ -435,10 +435,11 @@ spa_pod_parser_get_object(&p,
 \endcode
 
 `spa_pod_get_values()` is a useful function. It returns a
-`struct spa_pod*` with and array of values. For normal POD's
-and choice none values, it simply returns the POD and one value.
-For other choice values it returns the choice type and an array
-of values:
+`struct spa_pod*` with and array of values. For invalid PODs
+it returns the POD and no values. For normal PODs it returns
+the POD and one value. For choice values it returns the choice
+type and an array of values. If the choice doesn't fit even a
+single value, the array will have no values.
 
 \code{.c}
 struct spa_pod *value;
@@ -1019,8 +1020,9 @@ A choice contains an array of possible values.
                    child2 and child3, in steps of child4 in the value array.
     - Enum (3)   : child1 is a default value, options are any value from
                    the value array, preferred values come first.
-    - Flags (4)  : child1 is a default value, options are any value from
-                   the value array, preferred values come first.
+    - Flags (4)  : only child1 is a flag value. When filtering, the flags
+                   are AND-ed together.
+
 - flags: must be 0
 
 ## Pod (20)

@@ -5,10 +5,6 @@
 #ifndef SPA_POD_FILTER_H
 #define SPA_POD_FILTER_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include <errno.h>
 #include <stdint.h>
 #include <stddef.h>
@@ -20,6 +16,10 @@ extern "C" {
 #include <spa/pod/builder.h>
 #include <spa/pod/compare.h>
 #include <spa/pod/dynamic.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #ifndef SPA_API_POD_FILTER
  #ifdef SPA_API_IMPL
@@ -35,12 +35,15 @@ extern "C" {
  */
 
 SPA_API_POD_FILTER int spa_pod_filter_flags_value(struct spa_pod_builder *b,
-		uint32_t type, const void *r1, const void *r2, uint32_t size SPA_UNUSED)
+		uint32_t type, const void *r1, const void *r2, uint32_t size)
 {
 	switch (type) {
 	case SPA_TYPE_Int:
 	{
-		int32_t val = (*(int32_t *) r1) & (*(int32_t *) r2);
+		int32_t val;
+		if (size < sizeof(int32_t))
+			return -EINVAL;
+		val = (*(int32_t *) r1) & (*(int32_t *) r2);
 		if (val == 0)
 			return 0;
 		spa_pod_builder_int(b, val);
@@ -48,7 +51,10 @@ SPA_API_POD_FILTER int spa_pod_filter_flags_value(struct spa_pod_builder *b,
 	}
 	case SPA_TYPE_Long:
 	{
-		int64_t val = (*(int64_t *) r1) & (*(int64_t *) r2);
+		int64_t val;
+		if (size < sizeof(int64_t))
+			return -EINVAL;
+		val = (*(int64_t *) r1) & (*(int64_t *) r2);
 		if (val == 0)
 			return 0;
 		spa_pod_builder_long(b, val);
@@ -67,15 +73,20 @@ spa_pod_filter_prop(struct spa_pod_builder *b,
 {
 	const struct spa_pod *v1, *v2;
 	struct spa_pod_choice *nc, dummy;
-	uint32_t j, k, nalt1, nalt2;
+	uint32_t j, k, nalt1, nalt2, nc_offs;
 	void *alt1, *alt2, *a1, *a2;
 	uint32_t type, size, p1c, p2c;
 	struct spa_pod_frame f;
 	int res, n_copied = 0;
 
 	v1 = spa_pod_get_values(&p1->value, &nalt1, &p1c);
-	alt1 = SPA_POD_BODY(v1);
 	v2 = spa_pod_get_values(&p2->value, &nalt2, &p2c);
+
+	/* empty/invalid choices */
+	if (nalt1 < 1 || nalt2 < 1)
+		return -EINVAL;
+
+	alt1 = SPA_POD_BODY(v1);
 	alt2 = SPA_POD_BODY(v2);
 
 	type = v1->type;
@@ -87,12 +98,10 @@ spa_pod_filter_prop(struct spa_pod_builder *b,
 
 	/* start with copying the property */
 	spa_pod_builder_prop(b, p1->key, p1->flags & p2->flags);
-	spa_pod_builder_push_choice(b, &f, 0, 0);
-	nc = (struct spa_pod_choice*)spa_pod_builder_frame(b, &f);
-	/* write to dummy value when builder overflows. We don't want to error
-	 * because overflowing is a way to determine the required buffer size. */
-	if (nc == NULL)
-		nc = &dummy;
+	spa_pod_builder_push_choice(b, &f, SPA_CHOICE_None, 0);
+	spa_zero(dummy);
+
+	nc_offs = f.offset;
 
 	/* start with an empty child and we will select a good default
 	 * below */
@@ -210,6 +219,7 @@ spa_pod_filter_prop(struct spa_pod_builder *b,
 		spa_pod_builder_raw(b, a1, size);
 		spa_pod_builder_raw(b, min1, size);
 		spa_pod_builder_raw(b, max1, size);
+		nc = (struct spa_pod_choice*)spa_pod_builder_deref_fallback(b, nc_offs, &dummy.pod);
 		nc->body.type = SPA_CHOICE_Range;
 	}
 	else if ((p1c == SPA_CHOICE_None && p2c == SPA_CHOICE_Flags) ||
@@ -217,6 +227,7 @@ spa_pod_filter_prop(struct spa_pod_builder *b,
 	    (p1c == SPA_CHOICE_Flags && p2c == SPA_CHOICE_Flags)) {
 		if (spa_pod_filter_flags_value(b, type, alt1, alt2, size) != 1)
 			return -EINVAL;
+		nc = (struct spa_pod_choice*)spa_pod_builder_deref_fallback(b, nc_offs, &dummy.pod);
 		nc->body.type = SPA_CHOICE_Flags;
 	}
 	else if (p1c == SPA_CHOICE_Range && p2c == SPA_CHOICE_Flags)
@@ -232,6 +243,7 @@ spa_pod_filter_prop(struct spa_pod_builder *b,
 	else if (p1c == SPA_CHOICE_Flags && p2c == SPA_CHOICE_Enum)
 		return -ENOTSUP;
 
+	nc = (struct spa_pod_choice*)spa_pod_builder_deref_fallback(b, nc_offs, &dummy.pod);
 	if (nc->body.type == SPA_CHOICE_None) {
 		if (n_copied == 0) {
 			return -EINVAL;
@@ -262,14 +274,14 @@ SPA_API_POD_FILTER int spa_pod_filter_part(struct spa_pod_builder *b,
 		uint32_t filter_offset = 0;
 		struct spa_pod_frame f;
 
-		switch (SPA_POD_TYPE(pp)) {
+		switch (pp->type) {
 		case SPA_TYPE_Object:
 			if (pf != NULL) {
 				struct spa_pod_object *op = (struct spa_pod_object *) pp;
 				struct spa_pod_object *of = (struct spa_pod_object *) pf;
 				const struct spa_pod_prop *p1, *p2;
 
-				if (SPA_POD_TYPE(pf) != SPA_POD_TYPE(pp))
+				if (pf->type != pp->type)
 					return -EINVAL;
 
 				spa_pod_builder_push_object(b, &f, op->body.type, op->body.id);
@@ -278,9 +290,9 @@ SPA_API_POD_FILTER int spa_pod_filter_part(struct spa_pod_builder *b,
 					p2 = spa_pod_object_find_prop(of, p2, p1->key);
 					if (p2 != NULL)
 						res = spa_pod_filter_prop(b, p1, p2);
-					else if ((p1->flags & SPA_POD_PROP_FLAG_MANDATORY) != 0)
+					else if (SPA_FLAG_IS_SET(p1->flags, SPA_POD_PROP_FLAG_MANDATORY))
 						res = -EINVAL;
-					else
+					else if (!SPA_FLAG_IS_SET(p1->flags, SPA_POD_PROP_FLAG_DROP))
 						spa_pod_builder_raw_padded(b, p1, SPA_POD_PROP_SIZE(p1));
 					if (res < 0)
 						break;
@@ -291,11 +303,12 @@ SPA_API_POD_FILTER int spa_pod_filter_part(struct spa_pod_builder *b,
 						p1 = spa_pod_object_find_prop(op, p1, p2->key);
 						if (p1 != NULL)
 							continue;
-						if ((p2->flags & SPA_POD_PROP_FLAG_MANDATORY) != 0)
+						if (SPA_FLAG_IS_SET(p2->flags, SPA_POD_PROP_FLAG_MANDATORY))
 							res = -EINVAL;
+						else if (!SPA_FLAG_IS_SET(p2->flags, SPA_POD_PROP_FLAG_DROP))
+							spa_pod_builder_raw_padded(b, p2, SPA_POD_PROP_SIZE(p2));
 						if (res < 0)
 							break;
-						spa_pod_builder_raw_padded(b, p2, SPA_POD_PROP_SIZE(p2));
 					}
 				}
 				spa_pod_builder_pop(b, &f);
@@ -307,7 +320,7 @@ SPA_API_POD_FILTER int spa_pod_filter_part(struct spa_pod_builder *b,
 
 		case SPA_TYPE_Struct:
 			if (pf != NULL) {
-				if (SPA_POD_TYPE(pf) != SPA_POD_TYPE(pp))
+				if (pf->type != pp->type)
 					return -EINVAL;
 
 				filter_offset = sizeof(struct spa_pod_struct);
@@ -326,9 +339,7 @@ SPA_API_POD_FILTER int spa_pod_filter_part(struct spa_pod_builder *b,
 
 		default:
 			if (pf != NULL) {
-				if (SPA_POD_SIZE(pp) != SPA_POD_SIZE(pf))
-					return -EINVAL;
-				if (memcmp(pp, pf, SPA_POD_SIZE(pp)) != 0)
+				if (spa_pod_memcmp(pp, pf) != 0)
 					return -EINVAL;
 				do_advance = true;
 			}
@@ -385,11 +396,15 @@ SPA_API_POD_FILTER int spa_pod_filter_object_make(struct spa_pod_object *pod)
 	int count = 0;
 
 	SPA_POD_OBJECT_FOREACH(pod, res) {
-		if (res->value.type == SPA_TYPE_Choice &&
+		if (spa_pod_is_choice(&res->value) &&
 		    !SPA_FLAG_IS_SET(res->flags, SPA_POD_PROP_FLAG_DONT_FIXATE)) {
 			uint32_t nvals, choice;
 			struct spa_pod *v = spa_pod_get_values(&res->value, &nvals, &choice);
 			const void *vals = SPA_POD_BODY(v);
+
+			if (nvals < 1)
+				continue;
+
 			if (spa_pod_compare_is_valid_choice(v->type, v->size,
 						vals, vals, nvals, choice)) {
 				((struct spa_pod_choice*)&res->value)->body.type = SPA_CHOICE_None;

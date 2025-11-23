@@ -7,10 +7,12 @@
 #include <opus/opus_custom.h>
 #endif
 
+#define MAX_CHANNELS	SPA_AUDIO_MAX_CHANNELS
+
 struct volume {
 	bool mute;
 	uint32_t n_volumes;
-	float volumes[SPA_AUDIO_MAX_CHANNELS];
+	float volumes[MAX_CHANNELS];
 };
 
 static inline float bswap_f32(float f)
@@ -307,9 +309,11 @@ static inline void n2j_midi_buffer_append(struct nj2_midi_buffer *buf,
 static void midi_to_netjack2(struct netjack2_peer *peer,
 		struct nj2_midi_buffer *buf, float *src, uint32_t n_samples)
 {
-	struct spa_pod *pod;
-	struct spa_pod_sequence *seq;
-	struct spa_pod_control *c;
+	struct spa_pod_parser parser;
+	struct spa_pod_frame frame;
+	struct spa_pod_sequence seq;
+	struct spa_pod_control c;
+	const void *seq_body, *c_body;
 	bool in_sysex = false;
 
 	buf->magic = MIDI_BUFFER_MAGIC;
@@ -322,45 +326,45 @@ static void midi_to_netjack2(struct netjack2_peer *peer,
 	if (src == NULL)
 		return;
 
-	if ((pod = spa_pod_from_data(src, n_samples * sizeof(float),
-					0, n_samples * sizeof(float))) == NULL)
-		return;
-	if (!spa_pod_is_sequence(pod))
+	spa_pod_parser_init_from_data(&parser, src, n_samples * sizeof(float),
+			0, n_samples * sizeof(float));
+	if (spa_pod_parser_push_sequence_body(&parser, &frame, &seq, &seq_body) < 0)
 		return;
 
-	seq = (struct spa_pod_sequence*)pod;
-
-	SPA_POD_SEQUENCE_FOREACH(seq, c) {
+	while (spa_pod_parser_get_control_body(&parser, &c, &c_body) >= 0) {
 		int size;
 		uint8_t data[16];
 		bool was_sysex = in_sysex;
+		size_t c_size = c.value.size;
+		uint64_t state = 0;
 
-		if (c->type != SPA_CONTROL_UMP)
+		if (c.type != SPA_CONTROL_UMP)
 			continue;
 
-		size = spa_ump_to_midi(SPA_POD_BODY(&c->value),
-				SPA_POD_BODY_SIZE(&c->value), data, sizeof(data));
-		if (size <= 0)
-			continue;
+		while (c_size > 0) {
+			size = spa_ump_to_midi((const uint32_t**)&c_body, &c_size, data, sizeof(data), &state);
+			if (size <= 0)
+				break;
 
-		if (c->offset >= n_samples) {
-			buf->lost_events++;
-			continue;
+			if (c.offset >= n_samples) {
+				buf->lost_events++;
+				continue;
+			}
+
+			if (!in_sysex && data[0] == 0xf0)
+				in_sysex = true;
+
+			if (!in_sysex && peer->fix_midi)
+				fix_midi_event(data, size);
+
+			if (in_sysex && data[size-1] == 0xf7)
+				in_sysex = false;
+
+			if (was_sysex)
+				n2j_midi_buffer_append(buf, data, size);
+			else
+				n2j_midi_buffer_write(buf, c.offset, data, size);
 		}
-
-		if (!in_sysex && data[0] == 0xf0)
-			in_sysex = true;
-
-		if (!in_sysex && peer->fix_midi)
-			fix_midi_event(data, size);
-
-		if (in_sysex && data[size-1] == 0xf7)
-			in_sysex = false;
-
-		if (was_sysex)
-			n2j_midi_buffer_append(buf, data, size);
-		else
-			n2j_midi_buffer_write(buf, c->offset, data, size);
 	}
 	if (buf->write_pos > 0)
 		memmove(SPA_PTROFF(buf, sizeof(*buf) + buf->event_count * sizeof(struct nj2_midi_event), void),
@@ -815,6 +819,8 @@ static int netjack2_recv_midi(struct netjack2_peer *peer, struct nj2_packet_head
 
 	if ((len = recv(peer->fd, buffer, packet_size, 0)) < 0)
 		return -errno;
+	if ((size_t)len < sizeof(*header))
+		return -EINVAL;
 
 	active_ports = peer->params.recv_midi_channels;
 	if (active_ports == 0)

@@ -15,6 +15,7 @@
 #include <spa/pod/pod.h>
 #include <spa/pod/builder.h>
 #include <spa/support/log.h>
+#include <spa/debug/log.h>
 
 #include "a2dp-codec-caps.h"
 #include "bap-codec-caps.h"
@@ -26,7 +27,7 @@
 
 #define SPA_TYPE_INTERFACE_Bluez5CodecMedia	SPA_TYPE_INFO_INTERFACE_BASE "Bluez5:Codec:Media:Private"
 
-#define SPA_VERSION_BLUEZ5_CODEC_MEDIA		13
+#define SPA_VERSION_BLUEZ5_CODEC_MEDIA		16
 
 struct spa_bluez5_codec_a2dp {
 	struct spa_interface iface;
@@ -60,6 +61,13 @@ enum {
 	NEED_FLUSH_FRAGMENT = 2,
 };
 
+enum media_codec_kind {
+        MEDIA_CODEC_A2DP,
+        MEDIA_CODEC_BAP,
+        MEDIA_CODEC_ASHA,
+        MEDIA_CODEC_HFP,
+};
+
 struct media_codec_audio_info {
 	uint32_t rate;
 	uint32_t channels;
@@ -67,11 +75,10 @@ struct media_codec_audio_info {
 
 struct media_codec {
 	enum spa_bluetooth_audio_codec id;
+	enum media_codec_kind kind;
+
 	uint8_t codec_id;
 	a2dp_vendor_codec_t vendor;
-
-	bool bap;
-	bool asha;
 
 	const char *name;
 	const char *description;
@@ -82,8 +89,12 @@ struct media_codec {
 
 	const struct media_codec *duplex_codec;	/**< Codec for non-standard A2DP duplex channel */
 
+	const bool stream_pkt;	/**< If true, socket data may contain multiple packets.
+				 * After successful decode, start_decode() should be
+				 * called again to parse the remaining data. */
+
 	int (*get_bis_config)(const struct media_codec *codec, uint8_t *caps,
-				uint8_t *caps_size,	struct spa_dict *settings,
+				uint8_t *caps_size, struct spa_dict *settings,
 				struct bap_codec_qos *qos);
 
 	/** If fill_caps is NULL, no endpoint is registered (for sharing with another codec). */
@@ -93,7 +104,8 @@ struct media_codec {
 	int (*select_config) (const struct media_codec *codec, uint32_t flags,
 			const void *caps, size_t caps_size,
 			const struct media_codec_audio_info *info,
-			const struct spa_dict *global_settings, uint8_t config[A2DP_MAX_CAPS_SIZE]);
+			const struct spa_dict *global_settings, uint8_t config[A2DP_MAX_CAPS_SIZE],
+			void **config_data);
 	int (*enum_config) (const struct media_codec *codec, uint32_t flags,
 			const void *caps, size_t caps_size, uint32_t id, uint32_t idx,
 			struct spa_pod_builder *builder, struct spa_pod **param);
@@ -101,9 +113,12 @@ struct media_codec {
 			const void *caps, size_t caps_size,
 			struct spa_audio_info *info);
 	int (*get_qos)(const struct media_codec *codec,
-			const void *config, size_t config_size,
 			const struct bap_endpoint_qos *endpoint_qos,
-			struct bap_codec_qos *qos, const struct spa_dict *settings);
+			const void *config_data,
+			struct bap_codec_qos *qos);
+	int (*get_metadata)(const struct media_codec *codec, const void *config_data,
+			uint8_t *meta, size_t meta_max_size);
+	void (*free_config_data)(const struct media_codec *codec, void *config_data);
 
 	/** qsort comparison sorting caps in order of preference for the codec.
 	 * Used in codec switching to select best remote endpoints.
@@ -196,6 +211,16 @@ struct media_codec {
 		void *dst, size_t dst_size,
 		size_t *dst_out);
 
+	/**
+	 * Generate audio data corresponding to one lost packet, using codec internal
+	 * packet loss concealment.
+	 *
+	 * NULL if not available.
+	 *
+	 * \return number of bytes produced, or < 0 for error
+	 */
+	int (*produce_plc) (void *data, void *dst, size_t dst_size);
+
 	int (*reduce_bitpool) (void *data);
 	int (*increase_bitpool) (void *data);
 
@@ -219,6 +244,21 @@ struct media_codec_config {
 	unsigned int priority;
 };
 
+static inline const char *media_codec_kind_str(const struct media_codec *codec)
+{
+	switch (codec->kind) {
+	case MEDIA_CODEC_A2DP:
+		return "A2DP";
+	case MEDIA_CODEC_BAP:
+		return "BAP";
+	case MEDIA_CODEC_ASHA:
+		return "ASHA";
+	case MEDIA_CODEC_HFP:
+		return "HFP";
+	}
+	return "unknown";
+}
+
 int media_codec_select_config(const struct media_codec_config configs[], size_t n,
 	uint32_t cap, int preferred_value);
 
@@ -228,5 +268,45 @@ int media_codec_get_config(const struct media_codec_config configs[], size_t n,
 bool media_codec_check_caps(const struct media_codec *codec, unsigned int codec_id,
 	const void *caps, size_t caps_size, const struct media_codec_audio_info *info,
 	const struct spa_dict *global_settings);
+
+struct __attribute__((packed)) ltv {
+	uint8_t  len;
+	uint8_t  type;
+	uint8_t  value[];
+};
+
+struct ltv_writer {
+	void *buf;
+	uint16_t size;
+	size_t max_size;
+};
+
+#define LTV_WRITER(ptr, max) ((struct ltv_writer) { .buf = (ptr), .max_size = (max) })
+
+void ltv_writer_data(struct ltv_writer *w, uint8_t type, void* value, size_t len);
+void ltv_writer_uint8(struct ltv_writer *w, uint8_t type, uint8_t v);
+void ltv_writer_uint16(struct ltv_writer *w, uint8_t type, uint16_t value);
+void ltv_writer_uint32(struct ltv_writer *w, uint8_t type, uint32_t value);
+int ltv_writer_end(struct ltv_writer *w);
+
+static inline const struct ltv *ltv_next(const void **data, size_t *size)
+{
+	const struct ltv *ltv;
+
+	if (*size == 0) {
+		*data = NULL;
+		return NULL;
+	}
+	if (*size < sizeof(struct ltv))
+		return NULL;
+
+	ltv = *data;
+	if (ltv->len >= *size)
+		return NULL;
+
+	*data = SPA_PTROFF(*data, ltv->len + 1, void);
+	*size -= ltv->len + 1;
+	return ltv;
+}
 
 #endif

@@ -52,8 +52,6 @@ struct impl {
 	struct pw_properties *properties;
 
 	struct spa_io_buffers io[2];
-
-	bool async;
 };
 
 /** \endcond */
@@ -106,8 +104,8 @@ static void link_update_state(struct pw_impl_link *link, enum pw_link_state stat
 		     pw_link_state_as_string(state), error);
 
 	if (state == PW_LINK_STATE_ERROR) {
-		pw_log_error("(%s) %s -> error (%s) (%s-%s)", link->name,
-				pw_link_state_as_string(old), error,
+		pw_log_error("(%s) %s -> error %s (%d) (%s-%s)", link->name,
+				pw_link_state_as_string(old), error, res,
 				pw_impl_port_state_as_string(link->output->state),
 				pw_impl_port_state_as_string(link->input->state));
 	} else {
@@ -176,7 +174,7 @@ static void complete_ready(void *obj, void *data, int res, uint32_t id)
 		    this->output->state >= PW_IMPL_PORT_STATE_READY)
 			link_update_state(this, PW_LINK_STATE_ALLOCATING, 0, NULL);
 	} else {
-		link_update_state(this, PW_LINK_STATE_ERROR, -EIO, strdup("Format negotiation failed"));
+		link_update_state(this, PW_LINK_STATE_ERROR, res, strdup("Format negotiation failed"));
 	}
 }
 
@@ -194,8 +192,8 @@ static void complete_paused(void *obj, void *data, int res, uint32_t id)
 			return;
 	}
 
-	pw_log_debug("%p: obj:%p port %p complete state:%d: %s", this, obj, port,
-			port->state, spa_strerror(res));
+	pw_log_debug("%p: obj:%p port %p complete state:%d: %s (%d)", this, obj, port,
+			port->state, spa_strerror(res), res);
 
 	if (SPA_RESULT_IS_OK(res)) {
 		if (port->state < PW_IMPL_PORT_STATE_PAUSED)
@@ -207,7 +205,7 @@ static void complete_paused(void *obj, void *data, int res, uint32_t id)
 			link_update_state(this, PW_LINK_STATE_PAUSED, 0, NULL);
 	} else {
 		mix->have_buffers = false;
-		link_update_state(this, PW_LINK_STATE_ERROR, -EIO, strdup("Buffer allocation failed"));
+		link_update_state(this, PW_LINK_STATE_ERROR, res, strdup("Buffer allocation failed"));
 	}
 }
 
@@ -700,13 +698,11 @@ static int do_allocation(struct pw_impl_link *this)
 		uint32_t in_port, out_port;
 
 		flags = 0;
-		/* always shared buffers for the link */
-		alloc_flags = PW_BUFFERS_FLAG_SHARED;
 		/* always enable async mode */
-		alloc_flags |= PW_BUFFERS_FLAG_ASYNC;
+		alloc_flags = PW_BUFFERS_FLAG_ASYNC;
 
 		if (output->node->remote || input->node->remote)
-			alloc_flags |= PW_BUFFERS_FLAG_SHARED_MEM;
+			alloc_flags |= PW_BUFFERS_FLAG_SHARED;
 
 		if (output->node->driver)
 			alloc_flags |= PW_BUFFERS_FLAG_IN_PRIORITY;
@@ -791,6 +787,7 @@ int pw_impl_link_activate(struct pw_impl_link *this)
 	struct impl *impl = SPA_CONTAINER_OF(this, struct impl, this);
 	int res;
 	uint32_t io_type, io_size;
+	bool reliable_driver;
 
 	pw_log_debug("%p: activate activated:%d state:%s", this, impl->activated,
 			pw_link_state_as_string(this->info.state));
@@ -799,7 +796,15 @@ int pw_impl_link_activate(struct pw_impl_link *this)
 		!impl->input.node->runnable || !impl->output.node->runnable)
 		return 0;
 
-	if (impl->async) {
+	/* check if the output node is a driver for the input node and if
+	 * it has reliable scheduling. Because it is a driver, it will always be
+	 * scheduled before the input node and there will not be any concurrent access
+	 * to the io, so we don't need async IO, even when the input is async. This
+	 * avoid the problem of out-of-order buffers after a stall. */
+	reliable_driver = (impl->output.node == impl->input.node->driver_node) &&
+		impl->output.node->reliable;
+
+	if (this->async && !reliable_driver) {
 		io_type = SPA_IO_AsyncBuffers;
 		io_size = sizeof(struct spa_io_async_buffers);
 	} else {
@@ -919,6 +924,7 @@ static void input_remove(struct pw_impl_link *this)
 	spa_list_remove(&this->input_link);
 	pw_impl_port_emit_link_removed(port, this);
 
+	pw_impl_port_recalc_capability(port);
 	pw_impl_port_recalc_latency(port);
 	pw_impl_port_recalc_tag(port);
 
@@ -951,6 +957,7 @@ static void output_remove(struct pw_impl_link *this)
 	spa_list_remove(&this->output_link);
 	pw_impl_port_emit_link_removed(port, this);
 
+	pw_impl_port_recalc_capability(port);
 	pw_impl_port_recalc_latency(port);
 	pw_impl_port_recalc_tag(port);
 
@@ -1133,6 +1140,14 @@ static void input_port_tag_changed(void *data)
 		pw_impl_port_recalc_tag(this->output);
 }
 
+static void input_port_capability_changed(void *data)
+{
+	struct impl *impl = data;
+	struct pw_impl_link *this = &impl->this;
+	if (!this->feedback)
+		pw_impl_port_recalc_capability(this->output);
+}
+
 static void output_port_latency_changed(void *data)
 {
 	struct impl *impl = data;
@@ -1149,12 +1164,21 @@ static void output_port_tag_changed(void *data)
 		pw_impl_port_recalc_tag(this->input);
 }
 
+static void output_port_capability_changed(void *data)
+{
+	struct impl *impl = data;
+	struct pw_impl_link *this = &impl->this;
+	if (!this->feedback)
+		pw_impl_port_recalc_capability(this->input);
+}
+
 static const struct pw_impl_port_events input_port_events = {
 	PW_VERSION_IMPL_PORT_EVENTS,
 	.param_changed = input_port_param_changed,
 	.state_changed = input_port_state_changed,
 	.latency_changed = input_port_latency_changed,
 	.tag_changed = input_port_tag_changed,
+	.capability_changed = input_port_capability_changed,
 };
 
 static const struct pw_impl_port_events output_port_events = {
@@ -1163,6 +1187,7 @@ static const struct pw_impl_port_events output_port_events = {
 	.state_changed = output_port_state_changed,
 	.latency_changed = output_port_latency_changed,
 	.tag_changed = output_port_tag_changed,
+	.capability_changed = output_port_capability_changed,
 };
 
 static void node_result(struct impl *impl, void *obj,
@@ -1200,16 +1225,29 @@ static void node_active_changed(void *data, bool active)
 	pw_impl_link_prepare(&impl->this);
 }
 
+static void node_driver_changed(void *data, struct pw_impl_node *old, struct pw_impl_node *driver)
+{
+	struct impl *impl = data;
+	if (impl->this.async) {
+		/* for async links, input and output port latency depends on if the
+		 * output node is directly driving the input node. */
+		pw_impl_port_recalc_latency(impl->output.port);
+		pw_impl_port_recalc_latency(impl->input.port);
+	}
+}
+
 static const struct pw_impl_node_events input_node_events = {
 	PW_VERSION_IMPL_NODE_EVENTS,
 	.result = input_node_result,
 	.active_changed = node_active_changed,
+	.driver_changed = node_driver_changed,
 };
 
 static const struct pw_impl_node_events output_node_events = {
 	PW_VERSION_IMPL_NODE_EVENTS,
 	.result = output_node_result,
 	.active_changed = node_active_changed,
+	.driver_changed = node_driver_changed,
 };
 
 static bool pw_impl_node_can_reach(struct pw_impl_node *output, struct pw_impl_node *input, int hop)
@@ -1482,6 +1520,7 @@ struct pw_impl_link *pw_context_create_link(struct pw_context *context,
 
 	this->context = context;
 	this->properties = properties;
+	this->info.props = &this->properties->dict;
 	this->info.state = PW_LINK_STATE_INIT;
 
 	this->output = output;
@@ -1496,18 +1535,17 @@ struct pw_impl_link *pw_context_create_link(struct pw_context *context,
 	if (this->passive && str == NULL)
 		 pw_properties_set(properties, PW_KEY_LINK_PASSIVE, "true");
 
-	impl->async = (output_node->async || input_node->async) &&
+	this->async = (output_node->async || input_node->async) &&
 		SPA_FLAG_IS_SET(output->flags, PW_IMPL_PORT_FLAG_ASYNC) &&
 		SPA_FLAG_IS_SET(input->flags, PW_IMPL_PORT_FLAG_ASYNC);
 
-	if (impl->async)
+	if (this->async)
 		 pw_properties_set(properties, PW_KEY_LINK_ASYNC, "true");
 
 	spa_hook_list_init(&this->listener_list);
 
 	impl->format_filter = format_filter;
 	this->info.format = NULL;
-	this->info.props = &this->properties->dict;
 
 	this->rt.out_mix.peer_id = input->global->id;
 	this->rt.in_mix.peer_id = output->global->id;
@@ -1536,14 +1574,8 @@ struct pw_impl_link *pw_context_create_link(struct pw_context *context,
 
 	impl->input.port = input;
 	impl->output.port = output;
-	if (this->feedback) {
-		impl->input.node = output_node;
-		impl->output.node = input_node;
-	}
-	else {
-		impl->output.node = output_node;
-		impl->input.node = input_node;
-	}
+	impl->output.node = output_node;
+	impl->input.node = input_node;
 	impl->input.mix = &this->rt.in_mix;
 	impl->output.mix = &this->rt.out_mix;
 
@@ -1557,20 +1589,26 @@ struct pw_impl_link *pw_context_create_link(struct pw_context *context,
 	pw_log_info("(%s) (%s) -> (%s) async:%d:%d:%d:%04x:%04x:%d", this->name, output_node->name,
 			input_node->name, output_node->driving,
 			output_node->async, input_node->async,
-			output->flags, input->flags, impl->async);
+			output->flags, input->flags, this->async);
 
 	pw_impl_port_emit_link_added(output, this);
 	pw_impl_port_emit_link_added(input, this);
 
 	try_link_controls(impl, output, input);
 
+	pw_impl_port_recalc_capability(output);
+	pw_impl_port_recalc_capability(input);
 	pw_impl_port_recalc_latency(output);
 	pw_impl_port_recalc_latency(input);
 	pw_impl_port_recalc_tag(output);
 	pw_impl_port_recalc_tag(input);
 
-	if (impl->output.node != impl->input.node)
-		this->peer = pw_node_peer_ref(impl->output.node, impl->input.node);
+	if (impl->output.node != impl->input.node) {
+		if (this->feedback)
+			this->peer = pw_node_peer_ref(impl->input.node, impl->output.node);
+		else
+			this->peer = pw_node_peer_ref(impl->output.node, impl->input.node);
+	}
 
 	return this;
 
@@ -1673,7 +1711,6 @@ int pw_impl_link_register(struct pw_impl_link *link,
 	pw_properties_setf(link->properties, PW_KEY_LINK_OUTPUT_PORT, "%u", link->info.output_port_id);
 	pw_properties_setf(link->properties, PW_KEY_LINK_INPUT_NODE, "%u", link->info.input_node_id);
 	pw_properties_setf(link->properties, PW_KEY_LINK_INPUT_PORT, "%u", link->info.input_port_id);
-	link->info.props = &link->properties->dict;
 
 	pw_global_update_keys(link->global, link->info.props, keys);
 

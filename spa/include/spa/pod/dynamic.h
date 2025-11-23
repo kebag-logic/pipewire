@@ -5,12 +5,12 @@
 #ifndef SPA_POD_DYNAMIC_H
 #define SPA_POD_DYNAMIC_H
 
+#include <spa/pod/builder.h>
+#include <spa/utils/cleanup.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#include <spa/pod/builder.h>
-#include <spa/utils/cleanup.h>
 
 #ifndef SPA_API_POD_DYNAMIC
  #ifdef SPA_API_IMPL
@@ -70,8 +70,10 @@ SPA_API_POD_DYNAMIC void spa_pod_dynamic_builder_continue(struct spa_pod_dynamic
 
 SPA_API_POD_DYNAMIC void spa_pod_dynamic_builder_clean(struct spa_pod_dynamic_builder *builder)
 {
-	if (builder->data != builder->b.data)
+	if (builder->data != builder->b.data) {
 		free(builder->b.data);
+		builder->b.data = NULL;
+	}
 }
 
 SPA_DEFINE_AUTO_CLEANUP(spa_pod_dynamic_builder, struct spa_pod_dynamic_builder, {

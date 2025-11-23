@@ -2,6 +2,8 @@
 /* SPDX-FileCopyrightText: Copyright © 2022 Wim Taymans */
 /* SPDX-License-Identifier: MIT */
 
+#include "config.h"
+
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
@@ -10,7 +12,6 @@
 
 #include <spa/utils/defs.h>
 
-#include "config.h"
 #ifdef HAVE_FFTW
 #include <fftw3.h>
 #else
@@ -217,7 +218,7 @@ void dsp_delay_c(void *obj, float *buffer, uint32_t *pos, uint32_t n_buffer,
 		for (i = 0; i < n_samples; i++) {
 			buffer[w] = buffer[w + n_buffer] = src[i];
 			dst[i] = buffer[w + o];
-			w = w + 1 > n_buffer ? 0 : w + 1;
+			w = w + 1 >= n_buffer ? 0 : w + 1;
 		}
 		*pos = w;
 	}

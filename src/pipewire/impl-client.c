@@ -27,6 +27,13 @@ struct impl {
 	unsigned int registered:1;
 };
 
+static const char * const global_keys[] = {
+	PW_KEY_ACCESS,
+	PW_KEY_CLIENT_ACCESS,
+	PW_KEY_APP_NAME,
+	NULL
+};
+
 #define pw_client_resource(r,m,v,...)		pw_resource_call(r,struct pw_client_events,m,v,__VA_ARGS__)
 #define pw_client_resource_info(r,...)		pw_client_resource(r,info,0,__VA_ARGS__)
 #define pw_client_resource_permissions(r,...)	pw_client_resource(r,permissions,0,__VA_ARGS__)
@@ -132,7 +139,8 @@ static int client_error(void *object, uint32_t id, int res, const char *error)
 			goto error_no_id;
 	}
 
-	pw_log_debug("%p: sender %p: error for global %u", client, sender, id);
+	pw_log_debug("%p: sender %p: error for global %u: %s (%d)",
+			client, sender, id, error, res);
 	pw_map_for_each(&client->objects, error_resource, &d);
 	return 0;
 
@@ -209,7 +217,6 @@ static int update_properties(struct pw_impl_client *client, const struct spa_dic
 		}
                 changed += pw_properties_set(client->properties, dict->items[i].key, dict->items[i].value);
 	}
-	client->info.props = &client->properties->dict;
 
 	pw_log_debug("%p: updated %d properties", client, changed);
 
@@ -220,9 +227,11 @@ static int update_properties(struct pw_impl_client *client, const struct spa_dic
 
 	pw_impl_client_emit_info_changed(client, &client->info);
 
-	if (client->global)
+	if (client->global) {
+		pw_global_update_keys(client->global, client->info.props, global_keys);
 		spa_list_for_each(resource, &client->global->resource_list, link)
 			pw_client_resource_info(resource, &client->info);
+	}
 
 	client->info.change_mask = 0;
 
@@ -238,13 +247,6 @@ static void update_busy(struct pw_impl_client *client)
 
 static int finish_register(struct pw_impl_client *client)
 {
-	static const char * const keys[] = {
-		PW_KEY_ACCESS,
-		PW_KEY_CLIENT_ACCESS,
-		PW_KEY_APP_NAME,
-		NULL
-	};
-
 	struct impl *impl = SPA_CONTAINER_OF(client, struct impl, this);
 	struct pw_impl_client *current;
 
@@ -260,7 +262,7 @@ static int finish_register(struct pw_impl_client *client)
 
 	update_busy(client);
 
-	pw_global_update_keys(client->global, client->info.props, keys);
+	pw_global_update_keys(client->global, client->info.props, global_keys);
 	pw_global_register(client->global);
 
 #ifdef OLD_MEDIA_SESSION_WORKAROUND
@@ -479,6 +481,8 @@ struct pw_impl_client *pw_context_create_client(struct pw_impl_core *core,
 	pw_mempool_add_listener(this->pool, &impl->pool_listener, &pool_events, impl);
 
 	this->properties = properties;
+	this->info.props = &this->properties->dict;
+
 	this->permission_func = client_permission_func;
 	this->permission_data = impl;
 
@@ -491,7 +495,6 @@ struct pw_impl_client *pw_context_create_client(struct pw_impl_core *core,
 
 	pw_context_add_listener(this->context, &impl->context_listener, &context_events, impl);
 
-	this->info.props = &this->properties->dict;
 
 	return this;
 
@@ -557,7 +560,6 @@ int pw_impl_client_register(struct pw_impl_client *client,
 	pw_properties_setf(client->properties, PW_KEY_OBJECT_ID, "%d", client->info.id);
 	pw_properties_setf(client->properties, PW_KEY_OBJECT_SERIAL, "%"PRIu64,
 			pw_global_get_serial(client->global));
-	client->info.props = &client->properties->dict;
 	pw_global_add_listener(client->global, &client->global_listener, &global_events, client);
 
 	pw_global_update_keys(client->global, client->info.props, keys);

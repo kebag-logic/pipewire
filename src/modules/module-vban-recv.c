@@ -75,6 +75,7 @@
  * Options with well-known behavior:
  *
  * - \ref PW_KEY_REMOTE_NAME
+ * - \ref SPA_KEY_AUDIO_LAYOUT
  * - \ref SPA_KEY_AUDIO_POSITION
  * - \ref PW_KEY_MEDIA_NAME
  * - \ref PW_KEY_MEDIA_CLASS
@@ -166,8 +167,9 @@ struct impl {
 	struct pw_properties *props;
 	struct pw_context *context;
 
-	struct pw_loop *loop;
+	struct pw_loop *main_loop;
 	struct pw_loop *data_loop;
+	struct pw_timer_queue *timer_queue;
 
 	struct pw_core *core;
 	struct spa_hook core_listener;
@@ -180,7 +182,7 @@ struct impl {
 
 	struct pw_properties *stream_props;
 
-	struct spa_source *timer;
+	struct pw_timer timer;
 
 	uint16_t src_port;
 	struct sockaddr_storage src_addr;
@@ -457,7 +459,7 @@ static struct stream *make_stream(struct impl *impl, const struct vban_header *h
 	stream->salen = salen;
 	spa_list_append(&impl->streams, &stream->link);
 
-	pw_loop_invoke(impl->loop, do_setup_stream, 1, NULL, 0, false, stream);
+	pw_loop_invoke(impl->main_loop, do_setup_stream, 1, NULL, 0, false, stream);
 
 	return stream;
 }
@@ -562,7 +564,7 @@ static void destroy_stream(struct stream *s)
 	free(s);
 }
 
-static void on_timer_event(void *data, uint64_t expirations)
+static void on_timer_event(void *data)
 {
 	struct impl *impl = data;
 	struct stream *s;
@@ -576,6 +578,9 @@ static void on_timer_event(void *data, uint64_t expirations)
 		}
 		s->receiving = false;
 	}
+	pw_timer_queue_add(impl->timer_queue, &impl->timer,
+			&impl->timer.timeout, impl->cleanup_interval * SPA_NSEC_PER_SEC,
+			on_timer_event, impl);
 }
 
 static void core_destroy(void *d)
@@ -602,8 +607,7 @@ static void impl_destroy(struct impl *impl)
 	if (impl->core && impl->do_disconnect)
 		pw_core_disconnect(impl->core);
 
-	if (impl->timer)
-		pw_loop_destroy_source(impl->loop, impl->timer);
+	pw_timer_queue_cancel(&impl->timer);
 
 	if (impl->data_loop)
 		pw_context_release_loop(impl->context, impl->data_loop);
@@ -658,7 +662,6 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	struct pw_context *context = pw_impl_module_get_context(module);
 	struct impl *impl;
 	const char *str;
-	struct timespec value, interval;
 	struct pw_properties *props, *stream_props;
 	int res = 0;
 
@@ -681,7 +684,8 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 
 	impl->module = module;
 	impl->context = context;
-	impl->loop = pw_context_get_main_loop(context);
+	impl->main_loop = pw_context_get_main_loop(context);
+	impl->timer_queue = pw_context_get_timer_queue(context);
 	impl->data_loop = pw_context_acquire_loop(context, &props->dict);
 	spa_list_init(&impl->streams);
 
@@ -691,6 +695,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 		pw_properties_update_string(stream_props, str, strlen(str));
 
 	copy_props(impl, props, PW_KEY_NODE_LOOP_NAME);
+	copy_props(impl, props, SPA_KEY_AUDIO_LAYOUT);
 	copy_props(impl, props, SPA_KEY_AUDIO_POSITION);
 	copy_props(impl, props, PW_KEY_NODE_NAME);
 	copy_props(impl, props, PW_KEY_NODE_DESCRIPTION);
@@ -747,17 +752,12 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 			&impl->core_listener,
 			&core_events, impl);
 
-	impl->timer = pw_loop_add_timer(impl->loop, on_timer_event, impl);
-	if (impl->timer == NULL) {
-		res = -errno;
-		pw_log_error("can't create timer source: %m");
+	if ((res = pw_timer_queue_add(impl->timer_queue, &impl->timer,
+			NULL, impl->cleanup_interval * SPA_NSEC_PER_SEC,
+			on_timer_event, impl)) < 0) {
+		pw_log_error("can't add timer: %s", spa_strerror(res));
 		goto out;
 	}
-	value.tv_sec = impl->cleanup_interval;
-	value.tv_nsec = 0;
-	interval.tv_sec = impl->cleanup_interval;
-	interval.tv_nsec = 0;
-	pw_loop_update_timer(impl->loop, impl->timer, &value, &interval, false);
 
 	if ((res = listen_start(impl)) < 0) {
 		pw_log_error("failed to start VBAN stream: %s", spa_strerror(res));

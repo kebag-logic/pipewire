@@ -93,7 +93,19 @@ static int core_object_message_handler(struct client *client, struct pw_manager_
 {
 	pw_log_debug(": core %p object message:'%s' params:'%s'", o, message, params);
 
-	if (spa_streq(message, "list-handlers")) {
+	if (spa_streq(message, "help")) {
+		fprintf(response,
+				"/core <command> [<params>]\n"
+				"available commands:\n"
+				"  help                           this help\n"
+				"  list-handlers                  show available object handlers\n"
+				"  pipewire-pulse:malloc-info     show malloc_info\n"
+				"  pipewire-pulse:malloc-trim     run malloc_trim\n"
+				"  pipewire-pulse:log-level       update log level with <params>\n"
+				"  pipewire-pulse:list-modules    list all module names\n"
+				"  pipewire-pulse:describe-module describe module info for <params>"
+				);
+	} else if (spa_streq(message, "list-handlers")) {
 		bool first = true;
 
 		fputc('[', response);
@@ -118,6 +130,16 @@ static int core_object_message_handler(struct client *client, struct pw_manager_
 	} else if (spa_streq(message, "pipewire-pulse:log-level")) {
 		int res = pw_log_set_level_string(params);
 		fprintf(response, "%d", res);
+	} else if (spa_streq(message, "pipewire-pulse:list-modules")) {
+		bool first = true;
+		const struct module_info *i = NULL;
+		fputc('[', response);
+		while ((i = module_info_next(client->impl, i)) != NULL) {
+			fprintf(response, "%s{\"name\":\"%s\"}",
+						first ? "" : ",\n", i->name);
+				first = false;
+		}
+		fputc(']', response);
 	} else if (spa_streq(message, "pipewire-pulse:describe-module")) {
 		const struct module_info *i = module_info_find(client->impl, params);
 

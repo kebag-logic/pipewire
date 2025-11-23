@@ -9,7 +9,6 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <pthread.h>
-#include <threads.h>
 #include <stdatomic.h>
 
 #include <spa/support/loop.h>
@@ -80,28 +79,33 @@ struct impl {
         struct spa_system *system;
 
 	struct spa_list source_list;
-	struct spa_list destroy_list;
+	struct spa_list free_list;
 	struct spa_hook_list hooks_list;
 
 	struct spa_ratelimit rate_limit;
 	int retry_timeout;
+	bool prio_inherit;
 
 	union tag head;
 
 	uint32_t n_queues;
 	struct queue *queues[QUEUES_MAX];
-	pthread_mutex_t queue_lock;
+	pthread_mutex_t lock;
+	pthread_cond_t cond;
+	pthread_cond_t accept_cond;
+	int n_waiting;
+	int n_waiting_for_accept;
 
 	int poll_fd;
 	pthread_t thread;
 	int enter_count;
+	int recurse;
 
 	struct spa_source *wakeup;
 
 	uint32_t count;
 	uint32_t flush_count;
-
-	unsigned int polling:1;
+	uint32_t remove_count;
 };
 
 struct queue {
@@ -184,13 +188,13 @@ static int remove_from_poll(struct impl *impl, struct spa_source *source)
 {
 	spa_assert(source->loop == &impl->loop);
 
+	impl->remove_count++;
 	return spa_system_pollfd_del(impl->system, impl->poll_fd, source->fd);
 }
 
 static int loop_remove_source(void *object, struct spa_source *source)
 {
 	struct impl *impl = object;
-	spa_assert(!impl->polling);
 
 	int res = remove_from_poll(impl, source);
 	detach_source(source);
@@ -458,12 +462,12 @@ again:
 		 * this invoking thread but we need to serialize the flushing here with
 		 * a mutex */
 		if (loop_thread == 0)
-			pthread_mutex_lock(&impl->queue_lock);
+			pthread_mutex_lock(&impl->lock);
 
 		flush_all_queues(impl);
 
 		if (loop_thread == 0)
-			pthread_mutex_unlock(&impl->queue_lock);
+			pthread_mutex_unlock(&impl->lock);
 
 		res = item->res;
 	} else {
@@ -471,14 +475,26 @@ again:
 
 		if (block && queue->ack_fd != -1) {
 			uint64_t count = 1;
+			int i, recurse = 0;
 
-			spa_loop_control_hook_before(&impl->hooks_list);
+			if (pthread_mutex_trylock(&impl->lock) == 0) {
+				/* we are holding the lock, unlock recurse times */
+				recurse = impl->recurse;
+				while (impl->recurse > 0) {
+					impl->recurse--;
+					pthread_mutex_unlock(&impl->lock);
+				}
+				pthread_mutex_unlock(&impl->lock);
+			}
 
 			if ((res = spa_system_eventfd_read(impl->system, queue->ack_fd, &count)) < 0)
 				spa_log_warn(impl->log, "%p: failed to read event fd:%d: %s",
 						queue, queue->ack_fd, spa_strerror(res));
 
-			spa_loop_control_hook_after(&impl->hooks_list);
+			for (i = 0; i < recurse; i++) {
+				pthread_mutex_lock(&impl->lock);
+				impl->recurse++;
+			}
 
 			res = item->res;
 		}
@@ -548,6 +564,16 @@ static int loop_invoke(void *object, spa_invoke_func_t func, uint32_t seq,
 	}
 	return res;
 }
+static int loop_locked(void *object, spa_invoke_func_t func, uint32_t seq,
+		const void *data, size_t size, void *user_data)
+{
+	struct impl *impl = object;
+	int res;
+	pthread_mutex_lock(&impl->lock);
+	res = func(&impl->loop, false, seq, data, size, user_data);
+	pthread_mutex_unlock(&impl->lock);
+	return res;
+}
 
 static int loop_get_fd(void *object)
 {
@@ -572,6 +598,7 @@ static void loop_enter(void *object)
 	struct impl *impl = object;
 	pthread_t thread_id = pthread_self();
 
+	pthread_mutex_lock(&impl->lock);
 	if (impl->enter_count == 0) {
 		spa_return_if_fail(impl->thread == 0);
 		impl->thread = thread_id;
@@ -597,31 +624,101 @@ static void loop_leave(void *object)
 	if (--impl->enter_count == 0) {
 		impl->thread = 0;
 		flush_all_queues(impl);
-		impl->polling = false;
 	}
+	pthread_mutex_unlock(&impl->lock);
 }
 
 static int loop_check(void *object)
 {
 	struct impl *impl = object;
 	pthread_t thread_id = pthread_self();
-	return (impl->thread == 0 || pthread_equal(impl->thread, thread_id)) ? 1 : 0;
+	int res;
+
+	/* we are in the thread running the loop */
+	if (impl->thread == 0 || pthread_equal(impl->thread, thread_id))
+		return 1;
+
+	/* if lock taken by something else, error */
+	if ((res = pthread_mutex_trylock(&impl->lock)) != 0)
+		return -res;
+
+	/* we could take the lock, check if we actually locked it somewhere */
+	res = impl->recurse > 0 ? 1 : -EPERM;
+	pthread_mutex_unlock(&impl->lock);
+	return res;
+}
+static int loop_lock(void *object)
+{
+	struct impl *impl = object;
+	int res;
+
+	if ((res = pthread_mutex_lock(&impl->lock)) == 0)
+		impl->recurse++;
+	return -res;
+}
+static int loop_unlock(void *object)
+{
+	struct impl *impl = object;
+	int res;
+	spa_return_val_if_fail(impl->recurse > 0, -EIO);
+	impl->recurse--;
+	if ((res = pthread_mutex_unlock(&impl->lock)) != 0)
+		impl->recurse++;
+	return -res;
+}
+static int loop_get_time(void *object, struct timespec *abstime, int64_t timeout)
+{
+	if (clock_gettime(CLOCK_REALTIME, abstime) < 0)
+		return -errno;
+
+	abstime->tv_sec += timeout / SPA_NSEC_PER_SEC;
+	abstime->tv_nsec += timeout % SPA_NSEC_PER_SEC;
+	if (abstime->tv_nsec >= SPA_NSEC_PER_SEC) {
+		abstime->tv_sec++;
+		abstime->tv_nsec -= SPA_NSEC_PER_SEC;
+	}
+	return 0;
+}
+static int loop_wait(void *object, const struct timespec *abstime)
+{
+	struct impl *impl = object;
+	int res;
+
+	impl->n_waiting++;
+	impl->recurse--;
+	if (abstime)
+		res = pthread_cond_timedwait(&impl->cond, &impl->lock, abstime);
+	else
+		res = pthread_cond_wait(&impl->cond, &impl->lock);
+	impl->recurse++;
+	impl->n_waiting--;
+	return -res;
 }
 
-static inline void free_source(struct source_impl *s)
+static int loop_signal(void *object, bool wait_for_accept)
 {
-	detach_source(&s->source);
-	free(s);
+	struct impl *impl = object;
+	int res = 0;
+	if (impl->n_waiting > 0)
+		if ((res = pthread_cond_broadcast(&impl->cond)) != 0)
+			return -res;
+
+	if (wait_for_accept) {
+		impl->n_waiting_for_accept++;
+
+		while (impl->n_waiting_for_accept > 0) {
+			if ((res = pthread_cond_wait(&impl->accept_cond, &impl->lock)) != 0)
+				return -res;
+		}
+	}
+	return res;
 }
 
-static inline void process_destroy(struct impl *impl)
+static int loop_accept(void *object)
 {
-	struct source_impl *source, *tmp;
-
-	spa_list_for_each_safe(source, tmp, &impl->destroy_list, link)
-		free_source(source);
-
-	spa_list_init(&impl->destroy_list);
+	struct impl *impl = object;
+	impl->n_waiting_for_accept--;
+	return -pthread_cond_signal(&impl->accept_cond);
 }
 
 struct cancellation_handler_data {
@@ -647,14 +744,18 @@ static int loop_iterate_cancel(void *object, int timeout)
 	struct impl *impl = object;
 	struct spa_poll_event ep[MAX_EP], *e;
 	int i, nfds;
+	uint32_t remove_count;
 
-	impl->polling = true;
+	remove_count = impl->remove_count;
 	spa_loop_control_hook_before(&impl->hooks_list);
+	pthread_mutex_unlock(&impl->lock);
 
 	nfds = spa_system_pollfd_wait(impl->system, impl->poll_fd, ep, SPA_N_ELEMENTS(ep), timeout);
 
+	pthread_mutex_lock(&impl->lock);
 	spa_loop_control_hook_after(&impl->hooks_list);
-	impl->polling = false;
+	if (remove_count != impl->remove_count)
+		nfds = 0;
 
 	struct cancellation_handler_data cdata = { ep, nfds };
 	pthread_cleanup_push(cancellation_handler, &cdata);
@@ -675,9 +776,6 @@ static int loop_iterate_cancel(void *object, int timeout)
 		s->priv = &ep[i];
 	}
 
-	if (SPA_UNLIKELY(!spa_list_is_empty(&impl->destroy_list)))
-		process_destroy(impl);
-
 	for (i = 0; i < nfds; i++) {
 		struct spa_source *s = ep[i].data;
 		if (SPA_LIKELY(s && s->rmask))
@@ -694,14 +792,18 @@ static int loop_iterate(void *object, int timeout)
 	struct impl *impl = object;
 	struct spa_poll_event ep[MAX_EP], *e;
 	int i, nfds;
+	uint32_t remove_count;
 
-	impl->polling = true;
+	remove_count = impl->remove_count;
 	spa_loop_control_hook_before(&impl->hooks_list);
+	pthread_mutex_unlock(&impl->lock);
 
 	nfds = spa_system_pollfd_wait(impl->system, impl->poll_fd, ep, SPA_N_ELEMENTS(ep), timeout);
 
+	pthread_mutex_lock(&impl->lock);
 	spa_loop_control_hook_after(&impl->hooks_list);
-	impl->polling = false;
+	if (remove_count != impl->remove_count)
+		return 0;
 
 	/* first we set all the rmasks, then call the callbacks. The reason is that
 	 * some callback might also want to look at other sources it manages and
@@ -717,14 +819,12 @@ static int loop_iterate(void *object, int timeout)
 		s->priv = &ep[i];
 	}
 
-	if (SPA_UNLIKELY(!spa_list_is_empty(&impl->destroy_list)))
-		process_destroy(impl);
-
 	for (i = 0; i < nfds; i++) {
 		struct spa_source *s = ep[i].data;
 		if (SPA_LIKELY(s && s->rmask))
 			s->func(s);
 	}
+
 	for (i = 0; i < nfds; i++) {
 		struct spa_source *s = ep[i].data;
 		if (SPA_LIKELY(s)) {
@@ -733,6 +833,24 @@ static int loop_iterate(void *object, int timeout)
 		}
 	}
 	return nfds;
+}
+
+static struct source_impl *get_source(struct impl *impl)
+{
+	struct source_impl *source;
+
+	if (!spa_list_is_empty(&impl->free_list)) {
+		source = spa_list_first(&impl->free_list, struct source_impl, link);
+		spa_list_remove(&source->link);
+		spa_zero(*source);
+	} else {
+		source = calloc(1, sizeof(struct source_impl));
+	}
+	if (source != NULL) {
+		source->impl = impl;
+		spa_list_insert(&impl->source_list, &source->link);
+	}
+	return source;
 }
 
 static void source_io_func(struct spa_source *source)
@@ -751,7 +869,7 @@ static struct spa_source *loop_add_io(void *object,
 	struct source_impl *source;
 	int res;
 
-	source = calloc(1, sizeof(struct source_impl));
+	source = get_source(impl);
 	if (source == NULL)
 		goto error_exit;
 
@@ -759,7 +877,6 @@ static struct spa_source *loop_add_io(void *object,
 	source->source.data = data;
 	source->source.fd = fd;
 	source->source.mask = mask;
-	source->impl = impl;
 	source->close = close;
 	source->func.io = func;
 
@@ -777,9 +894,6 @@ static struct spa_source *loop_add_io(void *object,
 		spa_log_trace(impl->log, "%p: adding fallback %p", impl,
 				source->fallback);
 	}
-
-	spa_list_insert(&impl->source_list, &source->link);
-
 	return &source->source;
 
 error_exit_free:
@@ -844,7 +958,7 @@ static struct spa_source *loop_add_idle(void *object,
 	struct source_impl *source;
 	int res;
 
-	source = calloc(1, sizeof(struct source_impl));
+	source = get_source(impl);
 	if (source == NULL)
 		goto error_exit;
 
@@ -854,15 +968,12 @@ static struct spa_source *loop_add_idle(void *object,
 	source->source.func = source_idle_func;
 	source->source.data = data;
 	source->source.fd = res;
-	source->impl = impl;
 	source->close = true;
 	source->source.mask = SPA_IO_IN;
 	source->func.idle = func;
 
 	if ((res = loop_add_source(impl, &source->source)) < 0)
 		goto error_exit_close;
-
-	spa_list_insert(&impl->source_list, &source->link);
 
 	if (enabled)
 		loop_enable_idle(impl, &source->source, true);
@@ -900,7 +1011,7 @@ static struct spa_source *loop_add_event(void *object,
 	struct source_impl *source;
 	int res;
 
-	source = calloc(1, sizeof(struct source_impl));
+	source = get_source(impl);
 	if (source == NULL)
 		goto error_exit;
 
@@ -911,14 +1022,11 @@ static struct spa_source *loop_add_event(void *object,
 	source->source.data = data;
 	source->source.fd = res;
 	source->source.mask = SPA_IO_IN;
-	source->impl = impl;
 	source->close = true;
 	source->func.event = func;
 
 	if ((res = loop_add_source(impl, &source->source)) < 0)
 		goto error_exit_close;
-
-	spa_list_insert(&impl->source_list, &source->link);
 
 	return &source->source;
 
@@ -968,7 +1076,7 @@ static struct spa_source *loop_add_timer(void *object,
 	struct source_impl *source;
 	int res;
 
-	source = calloc(1, sizeof(struct source_impl));
+	source = get_source(impl);
 	if (source == NULL)
 		goto error_exit;
 
@@ -980,14 +1088,11 @@ static struct spa_source *loop_add_timer(void *object,
 	source->source.data = data;
 	source->source.fd = res;
 	source->source.mask = SPA_IO_IN;
-	source->impl = impl;
 	source->close = true;
 	source->func.timer = func;
 
 	if ((res = loop_add_source(impl, &source->source)) < 0)
 		goto error_exit_close;
-
-	spa_list_insert(&impl->source_list, &source->link);
 
 	return &source->source;
 
@@ -1052,7 +1157,7 @@ static struct spa_source *loop_add_signal(void *object,
 	struct source_impl *source;
 	int res;
 
-	source = calloc(1, sizeof(struct source_impl));
+	source = get_source(impl);
 	if (source == NULL)
 		goto error_exit;
 
@@ -1064,14 +1169,11 @@ static struct spa_source *loop_add_signal(void *object,
 	source->source.data = data;
 	source->source.fd = res;
 	source->source.mask = SPA_IO_IN;
-	source->impl = impl;
 	source->close = true;
 	source->func.signal = func;
 
 	if ((res = loop_add_source(impl, &source->source)) < 0)
 		goto error_exit_close;
-
-	spa_list_insert(&impl->source_list, &source->link);
 
 	return &source->source;
 
@@ -1092,8 +1194,6 @@ static void loop_destroy_source(void *object, struct spa_source *source)
 
 	spa_log_trace(s->impl->log, "%p ", s);
 
-	spa_list_remove(&s->link);
-
 	if (s->fallback)
 		loop_destroy_source(s->impl, s->fallback);
 	else
@@ -1104,10 +1204,9 @@ static void loop_destroy_source(void *object, struct spa_source *source)
 		source->fd = -1;
 	}
 
-	if (!s->impl->polling)
-		free_source(s);
-	else
-		spa_list_insert(&s->impl->destroy_list, &s->link);
+	spa_list_remove(&s->link);
+	detach_source(source);
+	spa_list_insert(&s->impl->free_list, &s->link);
 }
 
 static const struct spa_loop_methods impl_loop = {
@@ -1116,6 +1215,7 @@ static const struct spa_loop_methods impl_loop = {
 	.update_source = loop_update_source,
 	.remove_source = loop_remove_source,
 	.invoke = loop_invoke,
+	.locked = loop_locked,
 };
 
 static const struct spa_loop_control_methods impl_loop_control_cancel = {
@@ -1126,6 +1226,12 @@ static const struct spa_loop_control_methods impl_loop_control_cancel = {
 	.leave = loop_leave,
 	.iterate = loop_iterate_cancel,
 	.check = loop_check,
+	.lock = loop_lock,
+	.unlock = loop_unlock,
+	.get_time = loop_get_time,
+	.wait = loop_wait,
+	.signal = loop_signal,
+	.accept = loop_accept,
 };
 
 static const struct spa_loop_control_methods impl_loop_control = {
@@ -1136,6 +1242,12 @@ static const struct spa_loop_control_methods impl_loop_control = {
 	.leave = loop_leave,
 	.iterate = loop_iterate,
 	.check = loop_check,
+	.lock = loop_lock,
+	.unlock = loop_unlock,
+	.get_time = loop_get_time,
+	.wait = loop_wait,
+	.signal = loop_signal,
+	.accept = loop_accept,
 };
 
 static const struct spa_loop_utils_methods impl_loop_utils = {
@@ -1185,18 +1297,24 @@ static int impl_clear(struct spa_handle *handle)
 
 	spa_log_debug(impl->log, "%p: clear", impl);
 
-	if (impl->enter_count != 0 || impl->polling)
-		spa_log_warn(impl->log, "%p: loop is entered %d times polling:%d",
-				impl, impl->enter_count, impl->polling);
+	if (impl->enter_count != 0)
+		spa_log_warn(impl->log, "%p: loop is entered %d times",
+				impl, impl->enter_count);
 
 	spa_list_consume(source, &impl->source_list, link)
 		loop_destroy_source(impl, &source->source);
+
+	spa_list_consume(source, &impl->free_list, link) {
+		spa_list_remove(&source->link);
+		free(source);
+	}
 	for (i = 0; i < impl->n_queues; i++)
 		loop_queue_destroy(impl->queues[i]);
 
 	spa_system_close(impl->system, impl->poll_fd);
 
-	pthread_mutex_destroy(&impl->queue_lock);
+	pthread_cond_destroy(&impl->cond);
+	pthread_mutex_destroy(&impl->lock);
 
 	return 0;
 }
@@ -1227,6 +1345,7 @@ impl_init(const struct spa_handle_factory *factory,
 	struct impl *impl;
 	const char *str;
 	pthread_mutexattr_t attr;
+	pthread_condattr_t cattr;
 	int res;
 
 	spa_return_val_if_fail(factory != NULL, -EINVAL);
@@ -1258,11 +1377,24 @@ impl_init(const struct spa_handle_factory *factory,
 			impl->control.iface.cb.funcs = &impl_loop_control_cancel;
 		if ((str = spa_dict_lookup(info, "loop.retry-timeout")) != NULL)
 			impl->retry_timeout = atoi(str);
+		if ((str = spa_dict_lookup(info, "loop.prio-inherit")) != NULL)
+			impl->prio_inherit = spa_atob(str);
 	}
 
 	CHECK(pthread_mutexattr_init(&attr), error_exit);
-	CHECK(pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE), error_exit);
-	CHECK(pthread_mutex_init(&impl->queue_lock, &attr), error_exit);
+	CHECK(pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE), error_exit_free_attr);
+	if (impl->prio_inherit)
+		CHECK(pthread_mutexattr_setprotocol(&attr, PTHREAD_PRIO_INHERIT),
+					error_exit_free_attr)
+	CHECK(pthread_mutex_init(&impl->lock, &attr), error_exit_free_attr);
+	pthread_mutexattr_destroy(&attr);
+
+	CHECK(pthread_condattr_init(&cattr), error_exit_free_mutex);
+	CHECK(pthread_condattr_setclock(&cattr, CLOCK_REALTIME), error_exit_free_mutex);
+
+	CHECK(pthread_cond_init(&impl->cond, &cattr), error_exit_free_mutex);
+	CHECK(pthread_cond_init(&impl->accept_cond, &cattr), error_exit_free_mutex);
+	pthread_condattr_destroy(&cattr);
 
 	impl->log = spa_support_find(support, n_support, SPA_TYPE_INTERFACE_Log);
 	spa_log_topic_init(impl->log, &log_topic);
@@ -1271,17 +1403,17 @@ impl_init(const struct spa_handle_factory *factory,
 	if (impl->system == NULL) {
 		spa_log_error(impl->log, "%p: a System is needed", impl);
 		res = -EINVAL;
-		goto error_exit_free_mutex;
+		goto error_exit_free_cond;
 	}
 	if ((res = spa_system_pollfd_create(impl->system, SPA_FD_CLOEXEC)) < 0) {
 		spa_log_error(impl->log, "%p: can't create pollfd: %s",
 				impl, spa_strerror(res));
-		goto error_exit_free_mutex;
+		goto error_exit_free_cond;
 	}
 	impl->poll_fd = res;
 
 	spa_list_init(&impl->source_list);
-	spa_list_init(&impl->destroy_list);
+	spa_list_init(&impl->free_list);
 	spa_hook_list_init(&impl->hooks_list);
 
 	impl->wakeup = loop_add_event(impl, wakeup_func, impl);
@@ -1299,8 +1431,12 @@ impl_init(const struct spa_handle_factory *factory,
 
 error_exit_free_poll:
 	spa_system_close(impl->system, impl->poll_fd);
+error_exit_free_cond:
+	pthread_cond_destroy(&impl->cond);
 error_exit_free_mutex:
-	pthread_mutex_destroy(&impl->queue_lock);
+	pthread_mutex_destroy(&impl->lock);
+error_exit_free_attr:
+	pthread_mutexattr_destroy(&attr);
 error_exit:
 	return res;
 }

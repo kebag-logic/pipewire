@@ -25,7 +25,8 @@ SPA_LOG_IMPL(logger);
 
 extern const struct spa_handle_factory test_source_factory;
 
-#define MAX_PORTS (SPA_AUDIO_MAX_CHANNELS+1)
+#define MAX_CHANNELS SPA_AUDIO_MAX_CHANNELS
+#define MAX_PORTS (MAX_CHANNELS+1)
 
 struct context {
 	struct spa_handle *convert_handle;
@@ -598,7 +599,7 @@ static int run_convert(struct context *ctx, struct data *in_data,
 
 		for (j = 0; j < in_data->planes; j++, k++) {
 			b->datas[j].type = SPA_DATA_MemPtr;
-			b->datas[j].flags = 0;
+			b->datas[j].flags = SPA_DATA_FLAG_READABLE;
 			b->datas[j].fd = -1;
 			b->datas[j].mapoffset = 0;
 			b->datas[j].maxsize = in_data->size;
@@ -629,7 +630,7 @@ static int run_convert(struct context *ctx, struct data *in_data,
 
 		for (j = 0; j < out_data->planes; j++) {
 			b->datas[j].type = SPA_DATA_MemPtr;
-			b->datas[j].flags = 0;
+			b->datas[j].flags = SPA_DATA_FLAG_READWRITE;
 			b->datas[j].fd = -1;
 			b->datas[j].mapoffset = 0;
 			b->datas[j].maxsize = out_data->size;

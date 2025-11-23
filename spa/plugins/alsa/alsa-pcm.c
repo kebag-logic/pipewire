@@ -20,6 +20,7 @@
 
 static struct spa_list cards = SPA_LIST_INIT(&cards);
 static struct spa_list states = SPA_LIST_INIT(&states);
+#define SPA_ALSA_DLL_BW_MIN 0.001
 
 static struct card *find_card(uint32_t index)
 {
@@ -162,10 +163,10 @@ static int alsa_set_param(struct state *state, const char *k, const char *s)
 	int fmt_change = 0;
 	if (spa_streq(k, SPA_KEY_AUDIO_CHANNELS)) {
 		state->default_channels = atoi(s);
-		if (state->default_channels > SPA_AUDIO_MAX_CHANNELS) {
+		if (state->default_channels > MAX_CHANNELS) {
 			spa_log_warn(state->log, "%p: %s: %s > %d, clamping",
-					state, k, s, SPA_AUDIO_MAX_CHANNELS);
-			state->default_channels = SPA_AUDIO_MAX_CHANNELS;
+					state, k, s, MAX_CHANNELS);
+			state->default_channels = MAX_CHANNELS;
 		}
 		fmt_change++;
 	} else if (spa_streq(k, SPA_KEY_AUDIO_RATE)) {
@@ -198,6 +199,9 @@ static int alsa_set_param(struct state *state, const char *k, const char *s)
 		state->disable_batch = spa_atob(s);
 	} else if (spa_streq(k, "api.alsa.disable-tsched")) {
 		state->disable_tsched = spa_atob(s);
+	} else if (spa_streq(k, "api.alsa.dll-bandwidth-max")) {
+		state->dll_bw_max = SPA_CLAMPD(spa_strtod(s, NULL),
+					       SPA_ALSA_DLL_BW_MIN, SPA_DLL_BW_MAX);
 	} else if (spa_streq(k, "api.alsa.use-chmap")) {
 		state->props.use_chmap = spa_atob(s);
 	} else if (spa_streq(k, "api.alsa.multi-rate")) {
@@ -208,6 +212,8 @@ static int alsa_set_param(struct state *state, const char *k, const char *s)
 		state->htimestamp_max_errors = atoi(s);
 	} else if (spa_streq(k, "api.alsa.auto-link")) {
 		state->auto_link = spa_atob(s);
+	} else if (spa_streq(k, "api.alsa.dsd-lsb")) {
+		state->dsd_lsb = spa_atob(s);
 	} else if (spa_streq(k, "latency.internal.rate")) {
 		state->process_latency.rate = atoi(s);
 	} else if (spa_streq(k, "latency.internal.ns")) {
@@ -234,35 +240,33 @@ static int alsa_set_param(struct state *state, const char *k, const char *s)
 
 static int position_to_string(struct channel_map *map, char *val, size_t len)
 {
-	uint32_t i, o = 0;
-	int r;
-	o += snprintf(val, len, "[ ");
-	for (i = 0; i < map->channels; i++) {
-		r = snprintf(val+o, len-o, "%s%s", i == 0 ? "" : ", ",
-				spa_debug_type_find_short_name(spa_type_audio_channel,
-					map->pos[i]));
-		if (r < 0 || o + r >= len)
-			return -ENOSPC;
-		o += r;
+	uint32_t i;
+	char pos[8];
+	struct spa_strbuf b;
+
+	spa_strbuf_init(&b, val, len);
+	spa_strbuf_append(&b, "[");
+	for (i = 0; i < map->n_pos; i++) {
+		spa_strbuf_append(&b, "%s%s", i == 0 ? " " : ", ",
+				spa_type_audio_channel_make_short_name(map->pos[i],
+					pos, sizeof(pos), "UNK"));
 	}
-	if (len > o)
-		o += snprintf(val+o, len-o, " ]");
+	if (spa_strbuf_append(&b, " ]") < 2)
+		return -ENOSPC;
 	return 0;
 }
 
 static int uint32_array_to_string(uint32_t *vals, uint32_t n_vals, char *val, size_t len)
 {
-	uint32_t i, o = 0;
-	int r;
-	o += snprintf(val, len, "[ ");
-	for (i = 0; i < n_vals; i++) {
-		r = snprintf(val+o, len-o, "%s%d", i == 0 ? "" : ", ", vals[i]);
-		if (r < 0 || o + r >= len)
-			return -ENOSPC;
-		o += r;
-	}
-	if (len > o)
-		o += snprintf(val+o, len-o, " ]");
+	uint32_t i;
+	struct spa_strbuf b;
+
+	spa_strbuf_init(&b, val, len);
+	spa_strbuf_append(&b, "[");
+	for (i = 0; i < n_vals; i++)
+		spa_strbuf_append(&b, "%s%d", i == 0 ? " " : ", ", vals[i]);
+	if (spa_strbuf_append(&b, " ]") < 2)
+		return -ENOSPC;
 	return 0;
 }
 
@@ -769,7 +773,7 @@ static void bind_ctl_event(struct spa_source *source)
 	snd_ctl_elem_id_alloca(&bound_id);
 	snd_ctl_elem_value_alloca(&old_value);
 
-	while ((err = snd_ctl_read(state->ctl, ev) > 0)) {
+	while ((err = snd_ctl_read(state->ctl, ev)) > 0) {
 		bool changed = false;
 
 		if (snd_ctl_event_get_type(ev) != SND_CTL_EVENT_ELEM)
@@ -966,13 +970,21 @@ int spa_alsa_init(struct state *state, const struct spa_dict *info)
 
 	snd_config_update_free_global();
 
-	if ((str = spa_dict_lookup(info, "device.profile.pro")) != NULL)
+	if (info && (str = spa_dict_lookup(info, "device.profile.pro")) != NULL)
 		state->is_pro = spa_atob(str);
+
+	if (info && spa_strstartswith(spa_dict_lookup(info, SPA_KEY_API_ALSA_CARD_NAME), "sof-") &&
+	    state->stream == SND_PCM_STREAM_PLAYBACK) {
+		state->use_period_size_min_as_headroom = true;
+		spa_log_info(state->log,
+			     "ALSA SOF driver detected: default api.alsa.use-period-size-min-as-headroom=true");
+	}
 
 	state->multi_rate = true;
 	state->htimestamp = false;
 	state->htimestamp_max_errors = MAX_HTIMESTAMP_ERROR;
 	state->card_index = SPA_ID_INVALID;
+	state->dll_bw_max = SPA_DLL_BW_MAX;
 
 	for (i = 0; info && i < info->n_items; i++) {
 		const char *k = info->items[i].key;
@@ -1005,6 +1017,8 @@ int spa_alsa_init(struct state *state, const struct spa_dict *info)
 			state->num_bind_ctls = i;
 
 			/* We'll do the actual binding after checking the card exists */
+		} else if (spa_streq(k, SPA_KEY_DEVICE_BUS)) {
+			state->is_firewire = spa_streq(s, "firewire");
 		} else {
 			alsa_set_param(state, k, s);
 		}
@@ -1568,8 +1582,8 @@ static int add_channels(struct state *state, bool all, uint32_t index, uint32_t 
 	spa_log_debug(state->log, "channels (%d %d) default:%d all:%d",
 			min, max, state->default_channels, all);
 
-	min = SPA_MIN(min, SPA_AUDIO_MAX_CHANNELS);
-	max = SPA_MIN(max, SPA_AUDIO_MAX_CHANNELS);
+	min = SPA_MIN(min, MAX_CHANNELS);
+	max = SPA_MIN(max, MAX_CHANNELS);
 
 	if (state->default_channels != 0 && !all) {
 		if (min > state->default_channels ||
@@ -1629,7 +1643,7 @@ skip_channels:
 		} else {
 			const struct channel_map *map = NULL;
 			spa_pod_builder_int(b, min);
-			if (state->default_pos.channels == min) {
+			if (state->default_pos.n_pos == min) {
 				map = &state->default_pos;
 				spa_log_debug(state->log, "%p: using provided default", state);
 			} else if (min <= 8) {
@@ -1639,7 +1653,7 @@ skip_channels:
 			if (map) {
 				spa_pod_builder_prop(b, SPA_FORMAT_AUDIO_position, 0);
 				spa_pod_builder_push_array(b, &f[0]);
-				for (i = 0; i < map->channels; i++) {
+				for (i = 0; i < map->n_pos; i++) {
 					spa_log_debug(state->log, "%p: position %zd %d", state, i, map->pos[i]);
 					spa_pod_builder_id(b, map->pos[i]);
 				}
@@ -1918,7 +1932,7 @@ static int enum_dsd_formats(struct state *state, uint32_t index, uint32_t *next,
 			0);
 
 	spa_pod_builder_prop(b, SPA_FORMAT_AUDIO_bitorder, 0);
-	spa_pod_builder_id(b, SPA_PARAM_BITORDER_msb);
+	spa_pod_builder_id(b, state->dsd_lsb ? SPA_PARAM_BITORDER_lsb : SPA_PARAM_BITORDER_msb);
 
 	spa_pod_builder_prop(b, SPA_FORMAT_AUDIO_interleave, 0);
 	spa_pod_builder_int(b, interleave);
@@ -2025,7 +2039,12 @@ static void recalc_headroom(struct state *state)
 	if (state->position != NULL)
 		rate = state->position->clock.target_rate.denom;
 
-	state->headroom = state->default_headroom;
+	if (state->use_period_size_min_as_headroom)
+		state->headroom = state->default_headroom ?
+				  state->default_headroom : state->period_size_min;
+	else
+		state->headroom = state->default_headroom;
+
 	if (!state->disable_tsched || state->resample) {
 		/* When using timers, we might miss the pointer update for batch
 		 * devices so add some extra headroom. With IRQ, we know the pointers
@@ -2047,13 +2066,20 @@ static void recalc_headroom(struct state *state)
 	if (rate != 0 && state->rate != 0)
 		latency = SPA_SCALE32_UP(latency, rate, state->rate);
 
+	if (state->is_firewire) {
+		/* XXX: For ALSA FireWire drivers, unlike for other ALSA drivers, buffer size
+		 * XXX: contributes extra latency (as of kernel 6.16).
+		 */
+		latency += state->buffer_frames;
+	}
+
 	state->latency[state->port_direction].min_rate =
 		state->latency[state->port_direction].max_rate = latency;
 }
 
 int spa_alsa_set_format(struct state *state, struct spa_audio_info *fmt, uint32_t flags)
 {
-	unsigned int rrate, rchannels, val, rscale = 1;
+	unsigned int rrate, rchannels, val, rscale = 1, period_scale = 1;
 	snd_pcm_uframes_t period_size;
 	int err, dir;
 	snd_pcm_hw_params_t *params;
@@ -2069,7 +2095,7 @@ int spa_alsa_set_format(struct state *state, struct spa_audio_info *fmt, uint32_
 			state->have_format, state->started);
 
 	state->use_mmap = !state->disable_mmap;
-	state->force_rate = false;
+	state->force_quantum = state->disable_tsched;
 
 	switch (fmt->media_subtype) {
 	case SPA_MEDIA_SUBTYPE_raw:
@@ -2132,7 +2158,7 @@ int spa_alsa_set_format(struct state *state, struct spa_audio_info *fmt, uint32_
 				IEC958_AES0_CON_EMPHASIS_NONE | IEC958_AES0_NONAUDIO,
 				IEC958_AES1_CON_ORIGINAL | IEC958_AES1_CON_PCM_CODER,
 				0, aes3);
-		state->force_rate = true;
+		state->force_quantum = true;
 		break;
 	}
 	case SPA_MEDIA_SUBTYPE_dsd:
@@ -2170,6 +2196,7 @@ int spa_alsa_set_format(struct state *state, struct spa_audio_info *fmt, uint32_
 		default:
 			return -ENOTSUP;
 		}
+		state->force_quantum = true;
 		break;
 	}
 	default:
@@ -2300,10 +2327,13 @@ int spa_alsa_set_format(struct state *state, struct spa_audio_info *fmt, uint32_
 	default_period = SPA_SCALE32_UP(DEFAULT_PERIOD, state->rate, DEFAULT_RATE);
 	default_period = flp2(2 * default_period - 1);
 
-	/* no period size specified. If we are batch or not using timers,
-	 * use the graph duration as the period */
-	if (period_size == 0 && (state->is_batch || state->disable_tsched))
-		period_size = state->position ? state->position->clock.target_duration : default_period;
+	/* no period size specified. If we are batch or forcing our quantum,
+	 * use the graph requested quantum scaled by our rate */
+	if (period_size == 0 && (state->is_batch || state->force_quantum) && state->position) {
+		period_size = SPA_SCALE32_UP(state->position->clock.target_duration,
+				state->rate, state->position->clock.target_rate.denom);
+		period_size = flp2(period_size);
+	}
 	if (period_size == 0)
 		period_size = default_period;
 
@@ -2314,10 +2344,51 @@ int spa_alsa_set_format(struct state *state, struct spa_audio_info *fmt, uint32_
 			 * period size to our default so that we don't create too much
 			 * headroom. */
 			period_size = SPA_MIN(period_size, default_period) / 2;
+			period_scale = 2;
 		} else {
 			/* disable ALSA wakeups */
 			if (snd_pcm_hw_params_can_disable_period_wakeup(params))
 				CHECK(snd_pcm_hw_params_set_period_wakeup(hndl, params, 0), "set_period_wakeup");
+		}
+	}
+
+	if (state->default_period_num != 0) {
+		/* period number given use that */
+		periods = state->default_period_num;
+	} else if (state->disable_tsched) {
+		/* IRQ mode, use 3 periods. This is a bit of a workaround
+		 * for Firewire devices, which seem to only work with 3 periods.
+		 * For PipeWire it does not actually matter how many periods
+		 * are used, we will always keep 1 filled, so we can work fine
+		 * with anything from 2 periods to MAX. */
+		periods = 3;
+	} else {
+		periods = UINT_MAX;
+	}
+
+	/* Query the minimum period size for this configuration
+	 * This information is used as headroom if use_period_size_min_as_headroom is
+	 * set and default_headroom is 0 (not forced by user)
+	 */
+	CHECK(snd_pcm_hw_params_get_period_size_min(params, &state->period_size_min, &dir), "snd_pcm_hw_params_get_period_size_min");
+
+	if (state->default_period_size == 0) {
+		/* Some devices (FireWire) don't produce audio if period number is too
+		 * small, so force a minimum. This will restrict possible period sizes if
+		 * the device has small buffer (like FireWire), so force it only if
+		 * period size was not set manually.
+		 */
+		snd_pcm_uframes_t period_size_max;
+		unsigned int periods_min = (periods == UINT_MAX) ? 3 : periods;
+
+		err = snd_pcm_hw_params_set_periods_min(hndl, params, &periods_min, &dir);
+		if (!err) {
+			CHECK(snd_pcm_hw_params_get_period_size_max(params, &period_size_max, &dir),
+					"get_period_size_max");
+			if (period_size > period_size_max)
+				period_size = SPA_MIN(period_size, flp2(period_size_max));
+		} else {
+			spa_log_debug(state->log, "set_periods_min: %s", snd_strerror(err));
 		}
 	}
 
@@ -2329,9 +2400,9 @@ int spa_alsa_set_format(struct state *state, struct spa_audio_info *fmt, uint32_
 	}
 
 	state->period_frames = period_size;
+	state->duration = period_size * period_scale;
 
-	if (state->default_period_num != 0) {
-		periods = state->default_period_num;
+	if (periods != UINT_MAX) {
 		CHECK(snd_pcm_hw_params_set_periods_near(hndl, params, &periods, &dir), "set_periods");
 		state->buffer_frames = period_size * periods;
 	} else {
@@ -2362,14 +2433,14 @@ int spa_alsa_set_format(struct state *state, struct spa_audio_info *fmt, uint32_
 	recalc_headroom(state);
 
 	spa_log_info(state->log, "%s: format:%s access:%s-%s rate:%d channels:%d "
-			"buffer frames %lu, period frames %lu, periods %u, frame_size %zd "
-			"headroom %u start-delay:%u batch:%u tsched:%u",
+			"buffer frames %lu, period frames %lu (min:%lu), periods %u, frame_size %zd "
+			"headroom %u start-delay:%u batch:%u tsched:%u resample:%u",
 			state->name, snd_pcm_format_name(state->format),
 			state->use_mmap ? "mmap" : "rw",
 			planar ? "planar" : "interleaved",
 			state->rate, state->channels, state->buffer_frames, state->period_frames,
-			periods, state->frame_size, state->headroom, state->start_delay,
-			state->is_batch, !state->disable_tsched);
+			state->period_size_min, periods, state->frame_size, state->headroom,
+			state->start_delay, state->is_batch, !state->disable_tsched, state->resample);
 
 	/* write the parameters to device */
 	CHECK(snd_pcm_hw_params(hndl, params), "set_hw_params");
@@ -2569,6 +2640,7 @@ static int do_prepare(struct state *state)
 	state->alsa_sync = true;
 	state->alsa_sync_warning = false;
 	state->alsa_started = false;
+	spa_dll_init(&state->dll);
 
 	return 0;
 }
@@ -2601,6 +2673,7 @@ static inline int do_start(struct state *state)
 }
 
 static inline int check_position_config(struct state *state, bool starting);
+static void update_sources(struct state *state, bool active);
 
 static int alsa_recover(struct state *state)
 {
@@ -2680,6 +2753,8 @@ recover:
 		if (follower != driver && follower->linked)
 			do_start(follower);
 	}
+
+	update_sources(state, true);
 	return 0;
 }
 
@@ -2792,6 +2867,12 @@ static int update_time(struct state *state, uint64_t current_time, snd_pcm_sfram
 	double err, corr, avg;
 	int32_t diff;
 
+	if (SPA_UNLIKELY(state->dll.bw == 0.0)) {
+		spa_dll_set_bw(&state->dll, state->dll_bw_max, state->threshold, state->rate);
+		state->next_time = current_time;
+		state->base_time = current_time;
+	}
+
 	if (state->disable_tsched && !follower) {
 		err = (int64_t)(current_time - state->next_time);
 		err = err / 1e9 * state->rate;
@@ -2802,11 +2883,6 @@ static int update_time(struct state *state, uint64_t current_time, snd_pcm_sfram
 			err = target - delay;
 	}
 
-	if (SPA_UNLIKELY(state->dll.bw == 0.0)) {
-		spa_dll_set_bw(&state->dll, SPA_DLL_BW_MAX, state->threshold, state->rate);
-		state->next_time = current_time;
-		state->base_time = current_time;
-	}
 	diff = (int32_t) (state->last_threshold - state->threshold);
 
 	if (SPA_UNLIKELY(diff != 0)) {
@@ -2855,7 +2931,7 @@ static int update_time(struct state *state, uint64_t current_time, snd_pcm_sfram
 				err, state->max_error, state->max_resync, state->err_avg, state->err_var, bw);
 
 		spa_dll_set_bw(&state->dll,
-				SPA_CLAMPD(bw, 0.001, SPA_DLL_BW_MAX),
+				SPA_CLAMPD(bw, SPA_ALSA_DLL_BW_MIN, state->dll_bw_max),
 				state->threshold, state->rate);
 	}
 
@@ -2883,11 +2959,18 @@ static int update_time(struct state *state, uint64_t current_time, snd_pcm_sfram
 		state->clock->next_nsec = state->next_time;
 	}
 
-	spa_log_trace_fp(state->log, "%p: follower:%d %"PRIu64" %f %ld %ld %f %f %u",
-			state, follower, current_time, corr, delay, target, err, state->threshold * corr,
-			state->threshold);
+	spa_log_trace_fp(state->log, "%p: follower:%d %"PRIu64" %"PRIu64" %f %ld %ld %f %f %u %d",
+			state, follower, current_time, state->next_time, corr, delay, target,
+			err, state->threshold * corr, state->threshold, state->matching);
 
 	return 0;
+}
+
+static bool need_resample(struct state *state)
+{
+	return !state->pitch_elem &&
+		((state->rate != 0 && state->driver_rate.denom != 0 &&
+		 (uint32_t)state->rate != state->driver_rate.denom) || state->matching);
 }
 
 static int setup_matching(struct state *state)
@@ -2903,8 +2986,10 @@ static int setup_matching(struct state *state)
 	if (spa_streq(state->position->clock.name, state->clock_name))
 		state->matching = false;
 
-	state->resample = !state->pitch_elem &&
-		(((uint32_t)state->rate != state->driver_rate.denom) || state->matching);
+	state->resample = need_resample(state);
+
+	check_position_config(state, false);
+
 	recalc_headroom(state);
 
 	spa_log_info(state->log, "driver clock:'%s'@%d our clock:'%s'@%d matching:%d resample:%d",
@@ -2929,23 +3014,22 @@ static inline int check_position_config(struct state *state, bool starting)
 	uint64_t target_duration;
 	struct spa_fraction target_rate;
 	struct spa_io_position *pos;
+	bool can_force;
 
 	if (SPA_UNLIKELY((pos = state->position) == NULL))
 		return 0;
 
-	if (state->disable_tsched && (starting || state->started) && !state->following) {
-		target_duration = state->period_frames;
+	/* we can force rate/duration when we are the driver and started/starting */
+	can_force = (starting || state->started) && !state->following;
+
+	if (state->force_quantum && can_force) {
 		target_rate = SPA_FRACTION(1, state->rate);
-		pos->clock.target_duration = target_duration;
+		target_duration = state->duration;
 		pos->clock.target_rate = target_rate;
+		pos->clock.target_duration = target_duration;
 	} else {
+		target_rate = pos->clock.target_rate;
 		target_duration = pos->clock.target_duration;
-		if (state->force_rate && !state->following) {
-			target_rate = SPA_FRACTION(1, state->rate);
-			pos->clock.target_rate = target_rate;
-		} else {
-			target_rate = pos->clock.target_rate;
-		}
 	}
 	if (target_duration == 0 || target_rate.denom == 0)
 		return -EIO;
@@ -2962,8 +3046,7 @@ static inline int check_position_config(struct state *state, bool starting)
 		state->max_error = SPA_MAX(256.0f, (state->threshold + state->headroom) / 2.0f);
 		state->max_resync = SPA_MIN(state->threshold + state->headroom, state->max_error);
 		state->err_wdw = (double)state->driver_rate.denom/state->driver_duration;
-		state->resample = !state->pitch_elem &&
-			(((uint32_t)state->rate != state->driver_rate.denom) || state->matching);
+		state->resample = need_resample(state);
 		state->alsa_sync = true;
 	}
 	return 0;
@@ -2995,28 +3078,30 @@ static int alsa_write_sync(struct state *state, uint64_t current_time)
 	if (SPA_UNLIKELY((res = update_time(state, current_time, delay, target, following)) < 0))
 		return res;
 
-	if (following && state->alsa_started && !state->linked) {
+	if (following && state->alsa_started) {
 		if (SPA_UNLIKELY(state->alsa_sync)) {
 			enum spa_log_level lev;
 
-			if (SPA_UNLIKELY(state->alsa_sync_warning))
-				lev = SPA_LOG_LEVEL_WARN;
-			else
-				lev = SPA_LOG_LEVEL_INFO;
+			if (!state->linked) {
+				if (SPA_UNLIKELY(state->alsa_sync_warning))
+					lev = SPA_LOG_LEVEL_WARN;
+				else
+					lev = SPA_LOG_LEVEL_INFO;
 
-			if ((suppressed = spa_ratelimit_test(&state->rate_limit, current_time)) < 0)
-				lev = SPA_LOG_LEVEL_DEBUG;
+				if ((suppressed = spa_ratelimit_test(&state->rate_limit, current_time)) < 0)
+					lev = SPA_LOG_LEVEL_DEBUG;
 
-			spa_log_lev(state->log, lev, "%s: follower avail:%lu delay:%ld "
-					"target:%ld thr:%u, resync (%d suppressed)",
-					state->name, avail, delay,
-					target, state->threshold, suppressed);
+				spa_log_lev(state->log, lev, "%s: follower avail:%lu delay:%ld "
+						"target:%ld thr:%u, resync (%d suppressed)",
+						state->name, avail, delay,
+						target, state->threshold, suppressed);
 
-			if (avail > target)
-				snd_pcm_rewind(state->hndl, avail - target);
-			else if (avail < target)
-				spa_alsa_silence(state, target - avail);
-			avail = target;
+				if (delay > target)
+					snd_pcm_rewind(state->hndl, delay - target);
+				else if (delay < target)
+					spa_alsa_silence(state, target - delay);
+				avail = target;
+			}
 			spa_dll_init(&state->dll);
 			state->alsa_sync = false;
 		} else
@@ -3261,27 +3346,28 @@ static int alsa_read_sync(struct state *state, uint64_t current_time)
 		return res;
 
 	max_read = state->buffer_frames;
-	if (following && !state->linked) {
+	if (following) {
 		if (state->alsa_sync) {
-			enum spa_log_level lev;
+			if (!state->linked) {
+				enum spa_log_level lev;
+				if (SPA_UNLIKELY(state->alsa_sync_warning))
+					lev = SPA_LOG_LEVEL_WARN;
+				else
+					lev = SPA_LOG_LEVEL_INFO;
 
-			if (SPA_UNLIKELY(state->alsa_sync_warning))
-				lev = SPA_LOG_LEVEL_WARN;
-			else
-				lev = SPA_LOG_LEVEL_INFO;
+				if ((suppressed = spa_ratelimit_test(&state->rate_limit, current_time)) < 0)
+					lev = SPA_LOG_LEVEL_DEBUG;
 
-			if ((suppressed = spa_ratelimit_test(&state->rate_limit, current_time)) < 0)
-				lev = SPA_LOG_LEVEL_DEBUG;
+				spa_log_lev(state->log, lev, "%s: follower delay:%ld target:%ld thr:%u "
+						"resample:%d, resync (%d suppressed)", state->name, delay,
+						target, state->threshold, state->resample, suppressed);
 
-			spa_log_lev(state->log, lev, "%s: follower delay:%ld target:%ld thr:%u "
-					"resample:%d, resync (%d suppressed)", state->name, delay,
-					target, state->threshold, state->resample, suppressed);
-
-			if (avail < target)
-				max_read = target - avail;
-			else if (avail > target) {
-				snd_pcm_forward(state->hndl, avail - target);
-				avail = target;
+				if (avail < target)
+					max_read = target - avail;
+				else if (avail > target) {
+					snd_pcm_forward(state->hndl, avail - target);
+					avail = target;
+				}
 			}
 			state->alsa_sync = false;
 			spa_dll_init(&state->dll);
@@ -3363,6 +3449,10 @@ int spa_alsa_read(struct state *state)
 		uint64_t current_time = state->position->clock.nsec;
 		alsa_read_sync(state, current_time);
 	}
+	else if (state->resample && state->rate_match) {
+		state->read_size = state->rate_match->size;
+		state->max_read = SPA_MIN(state->buffer_frames, state->read_size);
+	}
 	return alsa_read_frames(state);
 }
 
@@ -3404,11 +3494,13 @@ static int playback_ready(struct state *state)
 {
 	struct spa_io_buffers *io = state->io;
 
-	spa_log_trace_fp(state->log, "%p: %d", state, io->status);
+	spa_log_trace_fp(state->log, "%p: %d", state, io ? io->status : 0);
 
 	update_sources(state, false);
 
-	io->status = SPA_STATUS_NEED_DATA;
+	if (io != NULL)
+		io->status = SPA_STATUS_NEED_DATA;
+
 	return spa_node_call_ready(&state->callbacks, SPA_STATUS_NEED_DATA);
 }
 
@@ -3611,7 +3703,7 @@ static int do_state_sync(struct spa_loop *loop, bool async, uint32_t seq,
 			rt->driver = state->driver;
 			spa_log_debug(state->log, "state:%p -> driver:%p", state, state->driver);
 
-			if(state->linked && state->matching)
+			if (state->linked && state->matching)
 				try_unlink(state);
 		}
 		if (state->following) {
@@ -3739,7 +3831,7 @@ int spa_alsa_start(struct state *state)
 	}
 
 	state->started = true;
-	spa_loop_invoke(state->data_loop, do_state_sync, 0, NULL, 0, true, state);
+	spa_loop_locked(state->data_loop, do_state_sync, 0, NULL, 0, state);
 
 	return 0;
 }
@@ -3783,7 +3875,7 @@ int spa_alsa_reassign_follower(struct state *state)
 	}
 	setup_matching(state);
 	if (state->started)
-		spa_loop_invoke(state->data_loop, do_state_sync, 0, NULL, 0, true, state);
+		spa_loop_locked(state->data_loop, do_state_sync, 0, NULL, 0, state);
 	else if (state->want_started)
 		spa_alsa_start(state);
 
@@ -3812,7 +3904,7 @@ int spa_alsa_pause(struct state *state)
 	spa_log_debug(state->log, "%p: pause", state);
 
 	state->started = false;
-	spa_loop_invoke(state->data_loop, do_state_sync, 0, NULL, 0, true, state);
+	spa_loop_locked(state->data_loop, do_state_sync, 0, NULL, 0, state);
 
 	spa_list_for_each(follower, &state->followers, driver_link)
 		spa_alsa_pause(follower);
@@ -3839,7 +3931,7 @@ void spa_alsa_emit_node_info(struct state *state, bool full)
 		items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_MEDIA_CLASS, state->props.media_class);
 		items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_NODE_DRIVER, "true");
 
-		if (state->have_format)
+		if (state->have_format && !state->disable_tsched)
 			snprintf(latency, sizeof(latency), "%lu/%d",
 					state->buffer_frames / (2 * state->frame_scale), state->rate);
 		items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_NODE_MAX_LATENCY, latency[0] ? latency : NULL);
@@ -3854,7 +3946,7 @@ void spa_alsa_emit_node_info(struct state *state, bool full)
 			snprintf(nperiods, sizeof(nperiods), "%lu",
 					state->period_frames != 0 ? state->buffer_frames / state->period_frames : 0);
 		else if (state->default_period_num)
-			snprintf(nperiods, sizeof(nperiods), "%u", state->default_period_size);
+			snprintf(nperiods, sizeof(nperiods), "%u", state->default_period_num);
 		items[n_items++] = SPA_DICT_ITEM_INIT("api.alsa.period-num", nperiods[0] ? nperiods : NULL);
 
 		if (state->have_format)

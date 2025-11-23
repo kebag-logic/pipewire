@@ -5,10 +5,6 @@
 #ifndef SPA_AVB_PCM_H
 #define SPA_AVB_PCM_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include <stddef.h>
 #include <math.h>
 #include <linux/if_ether.h>
@@ -36,6 +32,10 @@ extern "C" {
 #include <spa/param/audio/raw-json.h>
 
 #include "avb.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #define MAX_RATES	16
 
@@ -109,6 +109,7 @@ static inline char *format_streamid(char *str, size_t size, const uint64_t strea
 	return str;
 }
 
+#define MAX_CHANNELS SPA_AUDIO_MAX_CHANNELS
 #define MAX_BUFFERS 32
 
 struct buffer {
@@ -127,7 +128,7 @@ struct buffer {
 
 struct channel_map {
 	uint32_t channels;
-	uint32_t pos[SPA_AUDIO_MAX_CHANNELS];
+	uint32_t pos[MAX_CHANNELS];
 };
 
 struct port {

@@ -3,7 +3,7 @@
 /* SPDX-License-Identifier: MIT */
 
 #include <spa/node/utils.h>
-#include <spa/pod/parser.h>
+#include <spa/pod/iter.h>
 #include <spa/param/param.h>
 #include <spa/buffer/alloc.h>
 #include <spa/debug/types.h>
@@ -40,37 +40,37 @@ static int alloc_buffers(struct pw_mempool *pool,
 {
 	struct spa_buffer **buffers;
 	void *skel, *data;
-	uint32_t i;
+	uint32_t i, j;
 	struct spa_data *datas;
 	struct pw_memblock *m;
 	struct spa_buffer_alloc_info info = { 0, };
-
-	if (!SPA_FLAG_IS_SET(flags, PW_BUFFERS_FLAG_SHARED))
-		SPA_FLAG_SET(info.flags, SPA_BUFFER_ALLOC_FLAG_INLINE_ALL);
 
 	datas = alloca(sizeof(struct spa_data) * n_datas);
 
 	for (i = 0; i < n_datas; i++) {
 		struct spa_data *d = &datas[i];
-
 		spa_zero(*d);
-		if (data_sizes[i] > 0) {
-			/* we allocate memory */
-			d->type = SPA_DATA_MemPtr;
-			d->maxsize = data_sizes[i];
-			SPA_FLAG_SET(d->flags, SPA_DATA_FLAG_READWRITE);
-		} else {
-			/* client allocates memory. Set the mask of possible
-			 * types in the type field */
-			d->type = data_types[i];
-			d->maxsize = 0;
-		}
+		d->type = data_types[i];
+		d->maxsize = data_sizes[i];
 		if (SPA_FLAG_IS_SET(flags, PW_BUFFERS_FLAG_DYNAMIC))
 			SPA_FLAG_SET(d->flags, SPA_DATA_FLAG_DYNAMIC);
+		/* if we alloc, we know it will be READWRITE */
+		if (!SPA_FLAG_IS_SET(flags, PW_BUFFERS_FLAG_NO_MEM))
+			SPA_FLAG_SET(d->flags, SPA_DATA_FLAG_READWRITE);
 	}
+	/* propagate NO_MEM flag to NO_DATA for the buffer alloc. This ensures,
+	 * it does not try to set the data pointer in spa_data.  */
+	if (SPA_FLAG_IS_SET(flags, PW_BUFFERS_FLAG_NO_MEM))
+		SPA_FLAG_SET(info.flags, SPA_BUFFER_ALLOC_FLAG_NO_DATA);
+
+	/* if we don't share buffers, we can inline all meta/chunk/data with the
+	 * skeleton */
+	if (!SPA_FLAG_IS_SET(flags, PW_BUFFERS_FLAG_SHARED))
+		SPA_FLAG_SET(info.flags, SPA_BUFFER_ALLOC_FLAG_INLINE_ALL);
 
         spa_buffer_alloc_fill_info(&info, n_metas, metas, n_datas, datas, data_aligns);
 
+	/* allocate the skeleton, depending on SHARED flag, meta/chunk/data is included */
 	buffers = calloc(1, info.max_align + n_buffers * (sizeof(struct spa_buffer *) + info.skel_size));
 	if (buffers == NULL)
 		return -errno;
@@ -79,7 +79,7 @@ static int alloc_buffers(struct pw_mempool *pool,
 	skel = SPA_PTR_ALIGN(skel, info.max_align, void);
 
 	if (SPA_FLAG_IS_SET(flags, PW_BUFFERS_FLAG_SHARED)) {
-		/* pointer to buffer structures */
+		/* For shared data we use MemFd for meta/chunk/data */
 		m = pw_mempool_alloc(pool,
 				PW_MEMBLOCK_FLAG_READWRITE |
 				PW_MEMBLOCK_FLAG_SEAL |
@@ -90,7 +90,6 @@ static int alloc_buffers(struct pw_mempool *pool,
 			free(buffers);
 			return -errno;
 		}
-
 		data = m->map->ptr;
 	} else {
 		m = NULL;
@@ -99,7 +98,22 @@ static int alloc_buffers(struct pw_mempool *pool,
 
 	pw_log_debug("%p: layout buffers skel:%p data:%p n_buffers:%d buffers:%p",
 			allocation, skel, data, n_buffers, buffers);
+
 	spa_buffer_alloc_layout_array(&info, n_buffers, buffers, skel, data);
+
+	if (SPA_FLAG_IS_SET(flags, PW_BUFFERS_FLAG_SHARED) &&
+	    !SPA_FLAG_IS_SET(flags, PW_BUFFERS_FLAG_NO_MEM)) {
+		/* set the fd and mappoffset into our shared memory */
+		for (i = 0; i < n_buffers; i++) {
+			struct spa_buffer *buf = buffers[i];
+			for (j = 0; j < buf->n_datas; j++) {
+				struct spa_data *d = &buf->datas[j];
+				d->fd = m->fd;
+				d->mapoffset = SPA_PTRDIFF(d->data, data);
+				SPA_FLAG_SET(d->flags, SPA_DATA_FLAG_MAPPABLE);
+			}
+		}
+	}
 
 	allocation->mem = m;
 	allocation->n_buffers = n_buffers;
@@ -188,7 +202,7 @@ int pw_buffers_negotiate(struct pw_context *context, uint32_t flags,
 	struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
 	uint32_t i, j, offset, n_params, n_metas;
 	struct spa_meta *metas;
-	uint32_t max_buffers, blocks;
+	uint32_t min_buffers, max_buffers, blocks;
 	size_t minsize, stride, align;
 	uint32_t *data_sizes;
 	int32_t *data_strides;
@@ -221,12 +235,12 @@ int pw_buffers_negotiate(struct pw_context *context, uint32_t flags,
 	if ((res = param_filter(result, &input, &output, SPA_PARAM_Meta, &b)) > 0)
 		n_params += res;
 
-	metas = alloca(sizeof(struct spa_meta) * n_params);
+	metas = alloca(sizeof(struct spa_meta) * n_params * 2);
 
 	n_metas = 0;
 	params = alloca(n_params * sizeof(struct spa_pod *));
 	for (i = 0, offset = 0; i < n_params; i++) {
-		uint32_t type, size;
+		uint32_t type, size, features = 0;
 
 		params[i] = SPA_PTROFF(buffer, offset, struct spa_pod);
 		spa_pod_fixate(params[i]);
@@ -239,7 +253,8 @@ int pw_buffers_negotiate(struct pw_context *context, uint32_t flags,
 		if (spa_pod_parse_object(params[i],
 					SPA_TYPE_OBJECT_ParamMeta, NULL,
 					SPA_PARAM_META_type, SPA_POD_Id(&type),
-					SPA_PARAM_META_size, SPA_POD_Int(&size)) < 0) {
+					SPA_PARAM_META_size, SPA_POD_Int(&size),
+					SPA_PARAM_META_features, SPA_POD_OPT_Int(&features)) < 0) {
 			pw_log_warn("%p: invalid Meta param", result);
 			continue;
 		}
@@ -250,9 +265,15 @@ int pw_buffers_negotiate(struct pw_context *context, uint32_t flags,
 		metas[n_metas].type = type;
 		metas[n_metas].size = size;
 		n_metas++;
+		if (features != 0) {
+			metas[n_metas].type = SPA_META_TYPE_FEATURES(type, features);
+			metas[n_metas].size = 0;
+			n_metas++;
+		}
 	}
 
 	max_buffers = context->settings.link_max_buffers;
+	min_buffers = 1;
 
 	align = pw_properties_get_uint32(context->properties, PW_KEY_CPU_MAX_ALIGN, MAX_ALIGN);
 
@@ -306,17 +327,36 @@ int pw_buffers_negotiate(struct pw_context *context, uint32_t flags,
 	}
 
 	if (SPA_FLAG_IS_SET(flags, PW_BUFFERS_FLAG_ASYNC))
-		max_buffers = SPA_MAX(2u, max_buffers);
+		min_buffers += 1;
 
-	if (SPA_FLAG_IS_SET(flags, PW_BUFFERS_FLAG_SHARED_MEM)) {
-		if (types != SPA_ID_INVALID)
-			SPA_FLAG_CLEAR(types, 1<<SPA_DATA_MemPtr);
-		if (types == 0 || types == SPA_ID_INVALID)
-			types = 1<<SPA_DATA_MemFd;
-	}
+	max_buffers = SPA_MAX(min_buffers, max_buffers);
 
-	if (SPA_FLAG_IS_SET(flags, PW_BUFFERS_FLAG_NO_MEM))
+	if (SPA_FLAG_IS_SET(flags, PW_BUFFERS_FLAG_NO_MEM)) {
+		/* don't alloc memory, the meta/chunk data will be in
+		 * shared mem if PW_BUFFERS_FLAG_SHARED is set. The data
+		 * is blank, to be filled by the node later. */
 		minsize = 0;
+	} else {
+		/* we allocate memory, find a good type */
+		if (types & (1<<SPA_DATA_MemPtr)) {
+			/* if we need MemPtr, we either have the memory inline
+			 * with the skeleton of in shared mem with
+			 * PW_BUFFERS_FLAG_SHARED. We will simply mmap the data and
+			 * point the MemPtr to the memory. */
+			types = SPA_DATA_MemPtr;
+		}
+		else if (types & (1<<SPA_DATA_MemFd)) {
+			/* if we need MemFd, we move all the meta/chunk/data
+			 * into SHARED mem and use the global memfd for buffer
+			 * data as well. Align the buffer datas to page size to make
+			 * it easier to mmap. */
+			types = SPA_DATA_MemFd;
+			SPA_FLAG_SET(flags, PW_BUFFERS_FLAG_SHARED);
+			align = SPA_MAX((long)align, context->sc_pagesize);
+		}
+		else
+			return -ENOTSUP;
+	}
 
 	data_sizes = alloca(sizeof(uint32_t) * blocks);
 	data_strides = alloca(sizeof(int32_t) * blocks);

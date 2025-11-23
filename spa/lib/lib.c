@@ -1,4 +1,6 @@
 
+#undef SPA_AUDIO_MAX_CHANNELS
+
 #define SPA_API_IMPL	SPA_EXPORT
 #include <spa/utils/defs.h>
 #include <spa/buffer/alloc.h>
@@ -34,6 +36,8 @@
 #include <spa/param/audio/aac.h>
 #include <spa/param/audio/aac-types.h>
 #include <spa/param/audio/aac-utils.h>
+#include <spa/param/audio/ac3.h>
+#include <spa/param/audio/ac3-utils.h>
 #include <spa/param/audio/alac.h>
 #include <spa/param/audio/alac-utils.h>
 #include <spa/param/audio/amr.h>
@@ -46,6 +50,11 @@
 #include <spa/param/audio/dsd-utils.h>
 #include <spa/param/audio/dsp.h>
 #include <spa/param/audio/dsp-utils.h>
+#include <spa/param/audio/dts.h>
+#include <spa/param/audio/dts-types.h>
+#include <spa/param/audio/dts-utils.h>
+#include <spa/param/audio/eac3.h>
+#include <spa/param/audio/eac3-utils.h>
 #include <spa/param/audio/flac.h>
 #include <spa/param/audio/flac-utils.h>
 #include <spa/param/audio/format.h>
@@ -54,9 +63,12 @@
 #include <spa/param/audio/iec958-types.h>
 #include <spa/param/audio/iec958-utils.h>
 #include <spa/param/audio/layout.h>
+#include <spa/param/audio/layout-types.h>
 #include <spa/param/audio/mp3.h>
 #include <spa/param/audio/mp3-types.h>
 #include <spa/param/audio/mp3-utils.h>
+#include <spa/param/audio/mpegh.h>
+#include <spa/param/audio/mpegh-utils.h>
 #include <spa/param/audio/opus.h>
 #include <spa/param/audio/ra.h>
 #include <spa/param/audio/ra-utils.h>
@@ -65,6 +77,8 @@
 #include <spa/param/audio/raw-types.h>
 #include <spa/param/audio/raw-utils.h>
 #include <spa/param/audio/type-info.h>
+#include <spa/param/audio/truehd.h>
+#include <spa/param/audio/truehd-utils.h>
 #include <spa/param/audio/vorbis.h>
 #include <spa/param/audio/vorbis-utils.h>
 #include <spa/param/audio/wma.h>
@@ -118,6 +132,7 @@
 #include <spa/pod/dynamic.h>
 #include <spa/pod/event.h>
 #include <spa/pod/filter.h>
+#include <spa/pod/body.h>
 #include <spa/pod/iter.h>
 #include <spa/pod/parser.h>
 #include <spa/pod/pod.h>
@@ -153,9 +168,3 @@
 #include <spa/utils/string.h>
 #include <spa/utils/type.h>
 #include <spa/utils/type-info.h>
-
-
-
-
-
-

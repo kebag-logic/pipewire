@@ -31,12 +31,15 @@ include:
   - project: 'freedesktop/ci-templates'
     ref: *templates_sha
     file: '/templates/alpine.yml'
+  - project: 'freedesktop/ci-templates'
+    ref: *templates_sha
+    file: '/templates/debian.yml'
 
 .fedora:
   variables:
     # Update this tag when you want to trigger a rebuild
-    FDO_DISTRIBUTION_TAG: '2025-04-06.1'
-    FDO_DISTRIBUTION_VERSION: '41'
+    FDO_DISTRIBUTION_TAG: '2025-10-22.0'
+    FDO_DISTRIBUTION_VERSION: '42'
     FDO_DISTRIBUTION_PACKAGES: >-
       alsa-lib-devel
       avahi-devel
@@ -45,6 +48,7 @@ include:
       dbus-devel
       doxygen
       fdk-aac-free-devel
+      file
       findutils
       gcc
       gcc-c++
@@ -55,6 +59,7 @@ include:
       gstreamer1-plugins-base-devel
       jack-audio-connection-kit-devel
       libasan
+      liblc3-devel
       libcanberra-devel
       libebur128-devel
       libffado-devel
@@ -64,7 +69,6 @@ include:
       libubsan
       libusb1-devel
       lilv-devel
-      libv4l-devel
       libva-devel
       libX11-devel
       ModemManager-devel
@@ -76,6 +80,7 @@ include:
       sbc-devel
       ShellCheck
       SDL2-devel
+      spandsp-devel
       systemd-devel
       vulkan-loader-devel
       webrtc-audio-processing-devel
@@ -87,6 +92,9 @@ include:
       openal-soft
       readline-devel
       pandoc
+      fftw-libs-single
+      fftw-devel
+      onnxruntime-devel
 # Uncommenting the following two lines and disabling the meson entry above
 # will re-enable use of Meson via pip but please consider using a newer distro
 # image first or making the build system compatible instead! This is because
@@ -101,7 +109,7 @@ include:
 .ubuntu:
   variables:
     # Update this tag when you want to trigger a rebuild
-    FDO_DISTRIBUTION_TAG: '2025-03-25.0'
+    FDO_DISTRIBUTION_TAG: '2025-05-10.0'
     FDO_DISTRIBUTION_VERSION: '22.04'
     FDO_DISTRIBUTION_PACKAGES: >-
       debhelper-compat
@@ -122,7 +130,6 @@ include:
       libsnapd-glib-dev
       libudev-dev
       libva-dev
-      libv4l-dev
       libx11-dev
       meson
       ninja-build
@@ -137,6 +144,30 @@ include:
 #      python3-pip
 #    FDO_DISTRIBUTION_EXEC: >-
 #      pip3 install meson
+
+.debian:
+  variables:
+     # Update this tag when you want to trigger a rebuild
+    BASE_TAG: '2025-08-10.0'
+    FDO_DISTRIBUTION_VERSION: 'trixie'
+    FDO_DISTRIBUTION_PACKAGES: >-
+      build-essential
+      dpkg-dev
+      findutils
+      git
+      meson
+
+.debian-archictectures:
+  parallel:
+    matrix:
+      - ARCH:
+        - amd64
+        - arm64
+        - armhf
+        - i386
+        - ppc64el
+        - riscv64
+        - s390x
 
 .alpine:
   variables:
@@ -210,7 +241,8 @@ include:
     - echo "Building with meson options $MESON_OPTIONS"
     - meson setup "$BUILD_DIR" --prefix="$PREFIX" $MESON_OPTIONS
     - meson compile -C "$BUILD_DIR" $COMPILE_ARGS
-    - meson test -C "$BUILD_DIR" --no-rebuild
+    - echo "Running tests with meson options $MESON_TEST_OPTIONS"
+    - meson test -C "$BUILD_DIR" --no-rebuild $MESON_TEST_OPTIONS
     - meson install -C "$BUILD_DIR" --no-rebuild
   artifacts:
     name: pipewire-$CI_COMMIT_SHA
@@ -225,6 +257,18 @@ container_ubuntu:
   stage: container
   variables:
     GIT_STRATEGY: none # no need to pull the whole tree for rebuilding the image
+
+container_debian:
+  extends:
+    - .debian
+    - .debian-archictectures
+    - .fdo.container-build@debian
+  stage: container
+  variables:
+    GIT_STRATEGY: none # no need to pull the whole tree for rebuilding the image
+    FDO_DISTRIBUTION_TAG: "$BASE_TAG-$ARCH"
+    FDO_DISTRIBUTION_EXEC: >-
+      ./.gitlab/ci/setup-debian-cross-container.sh "$ARCH"
 
 container_fedora:
   extends:
@@ -258,8 +302,53 @@ build_on_ubuntu:
     - .fdo.distribution-image@ubuntu
     - .build
   stage: build
+  needs:
+    - job: container_ubuntu
+      artifacts: false
   variables:
     MESON_OPTIONS: "-Dsession-managers=[] -Dsnap=enabled"
+
+build_on_debian:
+  extends:
+    - .debian
+    - .debian-archictectures
+    - .not_coverity
+    - .fdo.distribution-image@debian
+    - .build
+  stage: build
+  needs:
+    - job: container_debian
+      artifacts: false
+      # ideally
+      # parallel:
+      #   matrix:
+      #     - ARCH: "$ARCH"
+      # however https://gitlab.com/gitlab-org/gitlab/-/issues/423553
+      #         ("Expand variables in `needs:parallel:matrix`")
+  variables:
+    FDO_DISTRIBUTION_TAG: "$BASE_TAG-$ARCH"
+    # see /.gitlab/ci/setup-debian-cross-container.sh for installed packages
+    MESON_OPTIONS: >-
+      --cross-file /opt/meson-$ARCH.cross
+      -D c_args=['-UFASTPATH']
+      -D cpp_args=['-UFASTPATH']
+      -D auto_features=enabled
+      -D session-managers=[]
+      -D bluez5-backend-native-mm=enabled
+      -D bluez5-codec-lc3plus=disabled
+      -D bluez5-codec-ldac=disabled
+      -D bluez5-codec-ldac-dec=disabled
+      -D libcamera=disabled
+      -D roc=disabled
+      -D snap=disabled
+      -D systemd-user-service=disabled
+      -D systemd-system-service=disabled
+      -D onnxruntime=disabled
+      -D vulkan=enabled
+      -D ffmpeg=enabled
+      -D pw-cat-ffmpeg=enabled
+    MESON_TEST_OPTIONS: >-
+      --timeout-multiplier=2
 
 .build_on_fedora:
   extends:
@@ -268,6 +357,9 @@ build_on_ubuntu:
     - .fdo.distribution-image@fedora
     - .build
   stage: build
+  needs:
+    - job: container_fedora
+      artifacts: false
 
 build_on_fedora:
   extends:
@@ -360,6 +452,9 @@ build_on_alpine:
     - .fdo.distribution-image@alpine
     - .build
   stage: build
+  needs:
+    - job: container_alpine
+      artifacts: false
   variables:
     MESON_OPTIONS: "-Dsession-managers=[] -Dsnap=disabled -Dlogind=enabled -Dlogind-provider=libelogind"
 
@@ -368,13 +463,12 @@ build_all:
   extends:
     - .build_on_fedora
   variables:
-    # Fedora doesn't have libfreeaptx, lc3plus, lc3, or roc
+    # Fedora doesn't have libfreeaptx, lc3plus, or roc
     # libcamera has no stable API, so let's not chase that target
     MESON_OPTIONS: >-
         -Dauto_features=enabled
         -Dbluez5-codec-aptx=disabled
         -Dbluez5-codec-lc3plus=disabled
-        -Dbluez5-codec-lc3=disabled
         -Dbluez5-codec-ldac-dec=disabled
         -Droc=disabled
         -Dlibcamera=disabled
@@ -495,6 +589,9 @@ build_with_coverity:
     - .fdo.suffixed-image@fedora
     - .build
   stage: analysis
+  needs:
+    - job: container_coverity
+      artifacts: false
   script:
     - export PATH=/opt/coverity/bin:$PATH
     - meson setup "$BUILD_DIR" --prefix="$PREFIX"
@@ -570,8 +667,9 @@ check_missing_headers:
     - .not_coverity
     - .fdo.distribution-image@fedora
   stage: analysis
-  dependencies:
-    - build_on_fedora
+  needs:
+    - job: build_on_fedora
+      artifacts: true
   script:
     - export PREFIX=`find -name prefix-*`
     - ./.gitlab/ci/check_missing_headers.sh
@@ -580,8 +678,9 @@ pages:
   extends:
     - .not_coverity
   stage: pages
-  dependencies:
-    - build_on_fedora_html_docs
+  needs:
+    - job: build_on_fedora_html_docs
+      artifacts: true
   script:
     - mkdir public public/1.0 public/1.2 public/1.4 public/devel
     - cp -R branch-1.0/builddir/doc/html/* public/1.0/
@@ -594,6 +693,3 @@ pages:
       - public
   rules:
     - if: $CI_COMMIT_BRANCH == 'master'
-    - if: $CI_COMMIT_BRANCH == '1.0'
-    - if: $CI_COMMIT_BRANCH == '1.2'
-    - if: $CI_COMMIT_BRANCH == '1.4'

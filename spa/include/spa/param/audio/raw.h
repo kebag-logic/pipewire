@@ -5,20 +5,24 @@
 #ifndef SPA_AUDIO_RAW_H
 #define SPA_AUDIO_RAW_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include <stdint.h>
 
 #include <spa/utils/endian.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /**
  * \addtogroup spa_param
  * \{
  */
 
+/* This is the max number of channels, changing this will change the
+ * size of some helper structures. This value should be at least 64 */
+#ifndef SPA_AUDIO_MAX_CHANNELS
 #define SPA_AUDIO_MAX_CHANNELS	64u
+#endif
 
 enum spa_audio_format {
 	SPA_AUDIO_FORMAT_UNKNOWN,
@@ -259,6 +263,8 @@ enum spa_audio_channel {
 	SPA_AUDIO_CHANNEL_START_Custom	= 0x10000,
 };
 
+#define SPA_AUDIO_CHANNEL_IS_AUX(ch)	((ch)>=SPA_AUDIO_CHANNEL_START_Aux && (ch)<=SPA_AUDIO_CHANNEL_LAST_Aux)
+
 enum spa_audio_volume_ramp_scale {
 	SPA_AUDIO_VOLUME_RAMP_INVALID,
 	SPA_AUDIO_VOLUME_RAMP_LINEAR,
@@ -269,16 +275,26 @@ enum spa_audio_volume_ramp_scale {
 #define SPA_AUDIO_FLAG_NONE		(0)		/*< no valid flag */
 #define SPA_AUDIO_FLAG_UNPOSITIONED	(1 << 0)	/*< the position array explicitly
 							 *  contains unpositioned channels. */
-/** Audio information description */
+/** Audio information description. You can assume when you receive this structure
+ * that there is enought padding to accomodate all channel positions in case the
+ * channel count is more than SPA_AUDIO_MAX_CHANNELS. */
 struct spa_audio_info_raw {
 	enum spa_audio_format format;		/*< format, one of enum spa_audio_format */
 	uint32_t flags;				/*< extra flags */
 	uint32_t rate;				/*< sample rate */
-	uint32_t channels;			/*< number of channels */
+	uint32_t channels;			/*< number of channels. This can be more than SPA_AUDIO_MAX_CHANNELS
+						 *  and you may assume there is enough padding for the extra
+						 *  channel positions. */
 	uint32_t position[SPA_AUDIO_MAX_CHANNELS];	/*< channel position from enum spa_audio_channel */
+	/* padding follows here when channels > SPA_AUDIO_MAX_CHANNELS */
 };
 
 #define SPA_AUDIO_INFO_RAW_INIT(...)		((struct spa_audio_info_raw) { __VA_ARGS__ })
+
+#define SPA_AUDIO_INFO_RAW_MAX_POSITION(size)	(((size)-offsetof(struct spa_audio_info_raw,position))/sizeof(uint32_t))
+
+#define SPA_AUDIO_INFO_RAW_VALID_SIZE(size)	((size) >= offsetof(struct spa_audio_info_raw, position))
+
 
 #define SPA_KEY_AUDIO_FORMAT		"audio.format"		/**< an audio format as string,
 								  *  Ex. "S16LE" */
@@ -286,6 +302,7 @@ struct spa_audio_info_raw {
 								  *  Ex. "FL" */
 #define SPA_KEY_AUDIO_CHANNELS		"audio.channels"	/**< an audio channel count as int */
 #define SPA_KEY_AUDIO_RATE		"audio.rate"		/**< an audio sample rate as int */
+#define SPA_KEY_AUDIO_LAYOUT		"audio.layout"		/**< channel positions as predefined layout */
 #define SPA_KEY_AUDIO_POSITION		"audio.position"	/**< channel positions as comma separated list
 								  *  of channels ex. "FL,FR" */
 #define SPA_KEY_AUDIO_ALLOWED_RATES	"audio.allowed-rates"	/**< a list of allowed samplerates

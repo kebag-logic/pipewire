@@ -31,6 +31,7 @@
 #define INDENT 2
 
 static bool colors = false;
+static bool raw = false;
 
 #define NORMAL	(colors ? SPA_ANSI_RESET : "")
 #define LITERAL	(colors ? SPA_ANSI_BRIGHT_MAGENTA : "")
@@ -56,12 +57,16 @@ struct data {
 
 	FILE *out;
 	int level;
+	int indent;
 #define STATE_KEY	(1<<0)
 #define STATE_COMMA	(1<<1)
 #define STATE_FIRST	(1<<2)
 #define STATE_MASK	0xffff0000
 #define STATE_SIMPLE	(1<<16)
 	uint32_t state;
+	const char *comma_char;
+	const char *keysep_char;
+	bool simple_string;
 
 	unsigned int monitor:1;
 };
@@ -214,14 +219,26 @@ static void object_destroy(struct object *o)
 
 static void put_key(struct data *d, const char *key);
 
+#define REJECT	"\"\\'=:,{}[]()#"
+
+static bool is_simple_string(const char *val)
+{
+	int i;
+	for (i = 0; val[i]; i++) {
+		if (val[i] < 0x20 || strchr(REJECT, val[i]) != NULL)
+			return false;
+	}
+	return true;
+}
+
 static SPA_PRINTF_FUNC(3,4) void put_fmt(struct data *d, const char *key, const char *fmt, ...)
 {
 	va_list va;
 	if (key)
 		put_key(d, key);
 	fprintf(d->out, "%s%s%*s",
-			d->state & STATE_COMMA ? "," : "",
-			d->state & (STATE_MASK | STATE_KEY) ? " " : d->state & STATE_FIRST ? "" : "\n",
+			d->state & STATE_COMMA ? d->comma_char : "",
+			d->state & (STATE_MASK | STATE_KEY) ? " " : (d->state & STATE_FIRST) || raw ? "" : "\n",
 			d->state & (STATE_MASK | STATE_KEY) ? 0 : d->level, "");
 	va_start(va, fmt);
 	vfprintf(d->out, fmt, va);
@@ -232,22 +249,26 @@ static SPA_PRINTF_FUNC(3,4) void put_fmt(struct data *d, const char *key, const 
 static void put_key(struct data *d, const char *key)
 {
 	int size = (strlen(key) + 1) * 4;
-	char *str = alloca(size);
-	spa_json_encode_string(str, size, key);
-	put_fmt(d, NULL, "%s%s%s:", KEY, str, NORMAL);
+	if (d->simple_string && is_simple_string(key)) {
+		put_fmt(d, NULL, "%s%s%s%s", KEY, key, NORMAL, d->keysep_char);
+	} else {
+		char *str = alloca(size);
+		spa_json_encode_string(str, size, key);
+		put_fmt(d, NULL, "%s%s%s%s", KEY, str, NORMAL, d->keysep_char);
+	}
 	d->state = (d->state & STATE_MASK) + STATE_KEY;
 }
 
 static void put_begin(struct data *d, const char *key, const char *type, uint32_t flags)
 {
 	put_fmt(d, key, "%s", type);
-	d->level += INDENT;
+	d->level += d->indent;
 	d->state = (d->state & STATE_MASK) + (flags & STATE_SIMPLE);
 }
 
 static void put_end(struct data *d, const char *type, uint32_t flags)
 {
-	d->level -= INDENT;
+	d->level -= d->indent;
 	d->state = d->state & STATE_MASK;
 	put_fmt(d, NULL, "%s", type);
 	d->state = (d->state & STATE_MASK) + STATE_COMMA - (flags & STATE_SIMPLE);
@@ -260,9 +281,13 @@ static void put_encoded_string(struct data *d, const char *key, const char *val)
 static void put_string(struct data *d, const char *key, const char *val)
 {
 	int size = (strlen(val) + 1) * 4;
-	char *str = alloca(size);
-	spa_json_encode_string(str, size, val);
-	put_encoded_string(d, key, str);
+	if (d->simple_string && is_simple_string(val)) {
+		put_encoded_string(d, key, val);
+	} else {
+		char *str = alloca(size);
+		spa_json_encode_string(str, size, val);
+		put_encoded_string(d, key, str);
+	}
 }
 
 static void put_literal(struct data *d, const char *key, const char *val)
@@ -316,12 +341,16 @@ static void put_pod_value(struct data *d, const char *key, const struct spa_type
 		put_key(d, key);
 	switch (type) {
 	case SPA_TYPE_Bool:
+		if (size < sizeof(int32_t))
+			break;
 		put_value(d, NULL, *(int32_t*)body ? "true" : "false");
 		break;
 	case SPA_TYPE_Id:
 	{
 		const char *str;
 		char fallback[32];
+		if (size < sizeof(uint32_t))
+			break;
 		uint32_t id = *(uint32_t*)body;
 		str = spa_debug_type_find_short_name(info, *(uint32_t*)body);
 		if (str == NULL) {
@@ -332,24 +361,38 @@ static void put_pod_value(struct data *d, const char *key, const struct spa_type
 		break;
 	}
 	case SPA_TYPE_Int:
+		if (size < sizeof(int32_t))
+			break;
 		put_int(d, NULL, *(int32_t*)body);
 		break;
 	case SPA_TYPE_Fd:
 	case SPA_TYPE_Long:
+		if (size < sizeof(int64_t))
+			break;
 		put_int(d, NULL, *(int64_t*)body);
 		break;
 	case SPA_TYPE_Float:
+		if (size < sizeof(float))
+			break;
 		put_double(d, NULL, *(float*)body);
 		break;
 	case SPA_TYPE_Double:
+		if (size < sizeof(double))
+			break;
 		put_double(d, NULL, *(double*)body);
 		break;
 	case SPA_TYPE_String:
+		if (size < 1 || ((const char *)body)[size - 1])
+			break;
 		put_string(d, NULL, (const char*)body);
 		break;
 	case SPA_TYPE_Rectangle:
 	{
-		struct spa_rectangle *r = (struct spa_rectangle *)body;
+		struct spa_rectangle *r;
+
+		if (size < sizeof(*r))
+			break;
+		r = (struct spa_rectangle *)body;
 		put_begin(d, NULL, "{", STATE_SIMPLE);
 		put_int(d, "width", r->width);
 		put_int(d, "height", r->height);
@@ -358,7 +401,11 @@ static void put_pod_value(struct data *d, const char *key, const struct spa_type
 	}
 	case SPA_TYPE_Fraction:
 	{
-		struct spa_fraction *f = (struct spa_fraction *)body;
+		struct spa_fraction *f;
+
+		if (size < sizeof(*f))
+			break;
+		f = (struct spa_fraction *)body;
 		put_begin(d, NULL, "{", STATE_SIMPLE);
 		put_int(d, "num", f->num);
 		put_int(d, "denom", f->denom);
@@ -367,8 +414,12 @@ static void put_pod_value(struct data *d, const char *key, const struct spa_type
 	}
 	case SPA_TYPE_Array:
 	{
-		struct spa_pod_array_body *b = (struct spa_pod_array_body *)body;
+		struct spa_pod_array_body *b;
 		void *p;
+
+		if (size < sizeof(*b))
+			break;
+		b = (struct spa_pod_array_body *)body;
 		info = info && info->values ? info->values: info;
 		put_begin(d, NULL, "[", STATE_SIMPLE);
 		SPA_POD_ARRAY_BODY_FOREACH(b, size, p)
@@ -486,10 +537,8 @@ static void put_pod(struct data *d, const char *key, const struct spa_pod *pod)
 	if (pod == NULL) {
 		put_value(d, key, NULL);
 	} else {
-		put_pod_value(d, key, SPA_TYPE_ROOT,
-				SPA_POD_TYPE(pod),
-				SPA_POD_BODY(pod),
-				SPA_POD_BODY_SIZE(pod));
+		put_pod_value(d, key, SPA_TYPE_ROOT, pod->type,
+		              SPA_POD_BODY(pod), pod->size);
 	}
 }
 
@@ -1512,7 +1561,10 @@ static void show_help(struct data *data, const char *name, bool error)
 		"  -r, --remote                          Remote daemon name\n"
 		"  -m, --monitor                         monitor changes\n"
 		"  -N, --no-colors                       disable color output\n"
-		"  -C, --color[=WHEN]                    whether to enable color support. WHEN is `never`, `always`, or `auto`\n",
+		"  -C, --color[=WHEN]                    whether to enable color support. WHEN is `never`, `always`, or `auto`\n"
+		"  -R, --raw                             force raw output\n"
+		"  -i, --indent                          indentation amount (default 2)\n"
+		"  -s, --spa                             SPA JSON output\n",
 		name);
 }
 
@@ -1529,6 +1581,9 @@ int main(int argc, char *argv[])
 		{ "monitor",	no_argument,		NULL, 'm' },
 		{ "no-colors",	no_argument,		NULL, 'N' },
 		{ "color",	optional_argument,	NULL, 'C' },
+		{ "raw",	no_argument,		NULL, 'R' },
+		{ "indent",	required_argument,	NULL, 'i' },
+		{ "spa",	no_argument,		NULL, 's' },
 		{ NULL, 0, NULL, 0}
 	};
 	int c;
@@ -1541,7 +1596,11 @@ int main(int argc, char *argv[])
 		colors = true;
 	setlinebuf(data.out);
 
-	while ((c = getopt_long(argc, argv, "hVr:mNC", long_options, NULL)) != -1) {
+	data.comma_char = ",";
+	data.keysep_char = ":";
+	data.indent = INDENT;
+
+	while ((c = getopt_long(argc, argv, "hVr:mNC::Ri:s", long_options, NULL)) != -1) {
 		switch (c) {
 		case 'h' :
 			show_help(&data, argv[0], false);
@@ -1563,6 +1622,9 @@ int main(int argc, char *argv[])
 		case 'N' :
 			colors = false;
 			break;
+		case 'R' :
+			raw = true;
+			break;
 		case 'C' :
 			if (optarg == NULL || !strcmp(optarg, "auto"))
 				break; /* nothing to do, tty detection was done
@@ -1577,11 +1639,21 @@ int main(int argc, char *argv[])
 				return -1;
 			}
 			break;
+		case 'i' :
+			data.indent = atoi(optarg);
+			break;
+		case 's' :
+			data.comma_char = "";
+			data.keysep_char = " =";
+			data.simple_string = true;
+			break;
 		default:
 			show_help(&data, argv[0], true);
 			return -1;
 		}
 	}
+	if (raw)
+		data.indent = 0;
 
 	if (optind < argc)
 		data.pattern = argv[optind++];

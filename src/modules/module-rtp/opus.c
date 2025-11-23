@@ -7,6 +7,9 @@
 #include <opus/opus.h>
 #include <opus/opus_multistream.h>
 
+/* TODO: Direct timestamp mode here may require a rework. See audio.c for a reference.
+ * Also check out the usage of actual_max_buffer_size in audio.c. */
+
 static void rtp_opus_process_playback(void *data)
 {
 	struct impl *impl = data;
@@ -87,15 +90,17 @@ static void rtp_opus_process_playback(void *data)
 		timestamp += wanted;
 		spa_ringbuffer_read_update(&impl->ring, timestamp);
 	}
+	d[0].chunk->offset = 0;
 	d[0].chunk->size = wanted * stride;
 	d[0].chunk->stride = stride;
-	d[0].chunk->offset = 0;
+	d[0].chunk->flags = 0;
 	buf->size = wanted;
 
 	pw_stream_queue_buffer(impl->stream, buf);
 }
 
-static int rtp_opus_receive(struct impl *impl, uint8_t *buffer, ssize_t len)
+static int rtp_opus_receive(struct impl *impl, uint8_t *buffer, ssize_t len,
+			uint64_t current_time)
 {
 	struct rtp_header *hdr;
 	ssize_t hlen, plen;
@@ -317,11 +322,24 @@ static void rtp_opus_process_capture(void *data)
 	rtp_opus_flush_packets(impl);
 }
 
+static void rtp_opus_deinit(struct impl *impl, enum spa_direction direction)
+{
+	if (impl->stream_data) {
+		if (direction == SPA_DIRECTION_INPUT)
+			opus_multistream_encoder_destroy(impl->stream_data);
+		else
+			opus_multistream_decoder_destroy(impl->stream_data);
+	}
+}
+
 static int rtp_opus_init(struct impl *impl, enum spa_direction direction)
 {
 	int err;
-	unsigned char mapping[SPA_AUDIO_MAX_CHANNELS];
+	unsigned char mapping[255];
 	uint32_t i;
+
+	if (impl->info.info.opus.channels > 255)
+		return -EINVAL;
 
 	if (impl->psamples >= 2880)
 		impl->psamples = 2880;
@@ -339,6 +357,7 @@ static int rtp_opus_init(struct impl *impl, enum spa_direction direction)
 	for (i = 0; i < impl->info.info.opus.channels; i++)
 		mapping[i] = i;
 
+	impl->deinit = rtp_opus_deinit;
 	impl->receive_rtp = rtp_opus_receive;
 	if (direction == SPA_DIRECTION_INPUT) {
 		impl->stream_events.process = rtp_opus_process_capture;

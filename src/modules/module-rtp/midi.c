@@ -2,6 +2,12 @@
 /* SPDX-FileCopyrightText: Copyright © 2022 Wim Taymans <wim.taymans@gmail.com> */
 /* SPDX-License-Identifier: MIT */
 
+#include <inttypes.h>
+#include <limits.h>
+
+/* TODO: Direct timestamp mode here may require a rework. See audio.c for a reference.
+ * Also check out the usage of actual_max_buffer_size in audio.c. */
+
 static void rtp_midi_process_playback(void *data)
 {
 	struct impl *impl = data;
@@ -51,7 +57,8 @@ static void rtp_midi_process_playback(void *data)
 			goto done;
 
 		/* the ringbuffer contains series of sequences, one for each
-		 * received packet */
+		 * received packet. This is not in shared mem so we can safely use
+		 * the iterators here. */
 		SPA_POD_SEQUENCE_FOREACH((struct spa_pod_sequence*)pod, c) {
 			/* try to render with given delay */
 			uint32_t target = c->offset + impl->target_buffer;
@@ -83,9 +90,10 @@ complete:
 		pw_log_warn("overflow buffer %u %u", b.state.offset, maxsize);
 		b.state.offset = 0;
 	}
+	d[0].chunk->offset = 0;
 	d[0].chunk->size = b.state.offset;
 	d[0].chunk->stride = 1;
-	d[0].chunk->offset = 0;
+	d[0].chunk->flags = 0;
 done:
 	pw_stream_queue_buffer(impl->stream, buf);
 }
@@ -95,12 +103,15 @@ static int parse_varlen(uint8_t *p, uint32_t avail, uint32_t *result)
 	uint32_t value = 0, offs = 0;
 	while (offs < avail) {
 		uint8_t b = p[offs++];
+		if (value > (UINT32_MAX >> 7))
+			return -ERANGE;
 		value = (value << 7) | (b & 0x7f);
-		if ((b & 0x80) == 0)
-			break;
+		if ((b & 0x80) == 0) {
+			*result = value;
+			return offs;
+		}
 	}
-	*result = value;
-	return offs;
+	return -EINVAL;
 }
 
 static int get_midi_size(uint8_t *p, uint32_t avail)
@@ -108,6 +119,8 @@ static int get_midi_size(uint8_t *p, uint32_t avail)
 	int size;
 	uint32_t offs = 0, value;
 
+	if (avail < 1)
+		return -EINVAL;
 	switch (p[offs++]) {
 	case 0xc0 ... 0xdf:
 		size = 2;
@@ -119,8 +132,11 @@ static int get_midi_size(uint8_t *p, uint32_t avail)
 	case 0xff:
 	case 0xf0:
 	case 0xf7:
-		size = parse_varlen(&p[offs], avail - offs, &value);
-		size += value + 1;
+		if ((size = parse_varlen(&p[offs], avail - offs, &value)) < 0)
+			return size;
+		if ((unsigned int)(INT_MAX - size - 1) > value)
+			return -EINVAL;
+		size += (int)value + 1;
 		break;
 	default:
 		return -EINVAL;
@@ -129,7 +145,11 @@ static int get_midi_size(uint8_t *p, uint32_t avail)
 }
 static int parse_journal(struct impl *impl, uint8_t *packet, uint16_t seq, uint32_t len)
 {
-	struct rtp_midi_journal *j = (struct rtp_midi_journal*)packet;
+	struct rtp_midi_journal *j;
+
+	if (len < sizeof(*j))
+		return -EINVAL;
+	j = (struct rtp_midi_journal*)packet;
 	uint16_t seqnum = ntohs(j->checkpoint_seqnum);
 	rtp_stream_emit_send_feedback(impl, seqnum);
 	return 0;
@@ -155,7 +175,7 @@ static int rtp_midi_receive_midi(struct impl *impl, uint8_t *packet, uint32_t ti
 		uint16_t seq, uint32_t payload_offset, uint32_t plen)
 {
 	uint32_t write;
-	struct rtp_midi_header *hdr;
+	struct rtp_midi_header hdr;
 	int32_t filled;
 	struct spa_pod_builder b;
 	struct spa_pod_frame f[1];
@@ -163,6 +183,8 @@ static int rtp_midi_receive_midi(struct impl *impl, uint8_t *packet, uint32_t ti
 	uint32_t offs = payload_offset, len, end;
 	bool first = true;
 
+	if (plen <= payload_offset)
+		return -EINVAL;
 	if (impl->direct_timestamp) {
 		/* in direct timestamp we attach the RTP timestamp directly on the
 		 * midi events and render them in the corresponding cycle */
@@ -218,18 +240,25 @@ static int rtp_midi_receive_midi(struct impl *impl, uint8_t *packet, uint32_t ti
 		return -ENOSPC;
 	}
 
-	hdr = (struct rtp_midi_header *)&packet[offs++];
-	len = hdr->len;
-	if (hdr->b) {
-		len = (len << 8) | hdr->len_b;
-		offs++;
+	SPA_STATIC_ASSERT(sizeof hdr == 2);
+	memcpy(&hdr, &packet[offs++], 1);
+	if (hdr.b) {
+		if (offs >= plen) {
+			pw_log_warn("invalid packet: no room for long length byte");
+			return -EINVAL;
+		}
+		hdr.len_b = packet[offs++];
+		len = (hdr.len << 8) | hdr.len_b;
+	} else {
+		hdr.len_b = 0;
+		len = hdr.len;
 	}
-	end = len + offs;
-	if (end > plen) {
-		pw_log_warn("invalid packet %d > %d", end, plen);
+	if (plen - offs < len) {
+		pw_log_warn("invalid packet %" PRIu64 " > %" PRIu32, (uint64_t)offs + len, plen);
 		return -EINVAL;
 	}
-	if (hdr->j)
+	end = len + offs;
+	if (hdr.j)
 		parse_journal(impl, &packet[end], seq, plen - end);
 
 	ptr = SPA_PTROFF(impl->buffer, write & BUFFER_MASK2, void);
@@ -246,17 +275,23 @@ static int rtp_midi_receive_midi(struct impl *impl, uint8_t *packet, uint32_t ti
 		uint8_t *d;
 		size_t s;
 
-		if (first && !hdr->z)
+		if (first && !hdr.z)
 			delta = 0;
-		else
-			offs += parse_varlen(&packet[offs], end - offs, &delta);
+		else {
+			size = parse_varlen(&packet[offs], end - offs, &delta);
+			if (size < 0) {
+				pw_log_warn("invalid offset at offset %u", offs);
+				return size;
+			}
+			offs += size;
+		}
 		timestamp += (uint32_t)(delta * impl->corr);
 
 		size = get_midi_size(&packet[offs], end - offs);
-		if (size <= 0 || offs + size > end) {
+		if (size <= 0 || (unsigned int)size > end - offs) {
 			pw_log_warn("invalid size (%08x) %d (%u %u)",
 					packet[offs], size, offs, end);
-			break;
+			return -EINVAL;
 		}
 
 		d = &packet[offs];
@@ -273,21 +308,25 @@ static int rtp_midi_receive_midi(struct impl *impl, uint8_t *packet, uint32_t ti
 		offs += size;
 		first = false;
 	}
-	spa_pod_builder_pop(&b, &f[0]);
-
+	if (spa_pod_builder_pop(&b, &f[0]) == NULL) {
+		pw_log_warn("overflow");
+		return -ENOSPC;
+	}
 	write += b.state.offset;
 	spa_ringbuffer_write_update(&impl->ring, write);
 
 	return 0;
 }
 
-static int rtp_midi_receive(struct impl *impl, uint8_t *buffer, ssize_t len)
+static int rtp_midi_receive(struct impl *impl, uint8_t *buffer, ssize_t len,
+			uint64_t current_time)
 {
 	struct rtp_header *hdr;
 	ssize_t hlen;
 	uint16_t seq;
 	uint32_t timestamp;
 
+	SPA_STATIC_ASSERT(sizeof(struct rtp_header) == 12);
 	if (len < 12)
 		goto short_packet;
 
@@ -296,7 +335,7 @@ static int rtp_midi_receive(struct impl *impl, uint8_t *buffer, ssize_t len)
 		goto invalid_version;
 
 	hlen = 12 + hdr->cc * 4;
-	if (hlen > len)
+	if (hlen >= len)
 		goto invalid_len;
 
 	if (impl->have_ssrc && impl->ssrc != hdr->ssrc)
@@ -339,31 +378,41 @@ unexpected_ssrc:
 	return -EINVAL;
 }
 
-static int write_event(uint8_t *p, uint32_t value, void *ev, uint32_t size)
+static int write_event(uint8_t *p, uint32_t buffer_size, uint32_t value, void *ev, uint32_t size)
 {
         uint64_t buffer;
         uint8_t b;
-        int count = 0;
+	unsigned int count = 0;
 
+	if (buffer_size <= size)
+		return -ENOSPC;
         buffer = value & 0x7f;
         while ((value >>= 7)) {
+		if (buffer > (UINT64_MAX >> 8))
+			return -ERANGE;
                 buffer <<= 8;
                 buffer |= ((value & 0x7f) | 0x80);
         }
         do  {
+                if (count >= buffer_size)
+                        return -ENOSPC;
 		b = buffer & 0xff;
                 p[count++] = b;
                 buffer >>= 8;
         } while (b & 0x80);
 
+	if (buffer_size - size < count ||
+	    count + size > (unsigned int)INT_MAX)
+		return -ENOSPC;
 	memcpy(&p[count], ev, size);
-        return count + size;
+        return (int)(count + size);
 }
 
 static void rtp_midi_flush_packets(struct impl *impl,
-		struct spa_pod_sequence *sequence, uint32_t timestamp, uint32_t rate)
+		struct spa_pod_parser *parser, uint32_t timestamp, uint32_t rate)
 {
-	struct spa_pod_control *c;
+	struct spa_pod_control c;
+	const void *c_body;
 	struct rtp_header header;
 	struct rtp_midi_header midi_header;
 	struct iovec iov[3];
@@ -386,57 +435,64 @@ static void rtp_midi_flush_packets(struct impl *impl,
 	prev_offset = len = base = 0;
 	max_size = impl->payload_size - sizeof(midi_header);
 
-	SPA_POD_SEQUENCE_FOREACH(sequence, c) {
+	while (spa_pod_parser_get_control_body(parser, &c, &c_body) >= 0) {
 		uint32_t delta, offset;
 		uint8_t event[16];
-		size_t size;
+		int size;
+		size_t c_size = c.value.size;
+		uint64_t state = 0;
 
-		if (c->type != SPA_CONTROL_UMP)
+		if (c.type != SPA_CONTROL_UMP)
 			continue;
 
-		size = spa_ump_to_midi(SPA_POD_BODY(&c->value),
-				SPA_POD_BODY_SIZE(&c->value), event, sizeof(event));
-		if (size <= 0)
-			continue;
+		while (c_size > 0) {
+			size = spa_ump_to_midi((const uint32_t **)&c_body, &c_size, event, sizeof(event), &state);
+			if (size <= 0)
+				break;
 
-		offset = c->offset * impl->rate / rate;
+			offset = c.offset * impl->rate / rate;
 
-		if (len > 0 && (len + size > max_size ||
-		    offset - base > impl->psamples)) {
-			/* flush packet when we have one and when it's either
-			 * too large or has too much data. */
-			if (len < 16) {
-				midi_header.b = 0;
-				midi_header.len = len;
-				iov[1].iov_len = sizeof(midi_header) - 1;
-			} else {
-				midi_header.b = 1;
-				midi_header.len = (len >> 8) & 0xf;
-				midi_header.len_b = len & 0xff;
-				iov[1].iov_len = sizeof(midi_header);
+			if (len > 0 && (len + size > max_size ||
+			    offset - base > impl->psamples)) {
+				/* flush packet when we have one and when it's either
+				 * too large or has too much data. */
+				if (len < 16) {
+					midi_header.b = 0;
+					midi_header.len = len;
+					iov[1].iov_len = sizeof(midi_header) - 1;
+				} else {
+					midi_header.b = 1;
+					midi_header.len = (len >> 8) & 0xf;
+					midi_header.len_b = len & 0xff;
+					iov[1].iov_len = sizeof(midi_header);
+				}
+				iov[2].iov_len = len;
+
+				pw_log_trace("sending %d timestamp:%d %u %u",
+						len, timestamp + base,
+						offset, impl->psamples);
+				rtp_stream_emit_send_packet(impl, iov, 3);
+
+				impl->seq++;
+				len = 0;
 			}
-			iov[2].iov_len = len;
+			if ((unsigned int)size > BUFFER_SIZE || len > BUFFER_SIZE - size) {
+				pw_log_error("Buffer overflow prevented!");
+				return; // FIXME: what to do instead?
+			}
+			if (len == 0) {
+				/* start new packet */
+				base = prev_offset = offset;
+				header.sequence_number = htons(impl->seq);
+				header.timestamp = htonl(impl->ts_offset + timestamp + base);
 
-			pw_log_trace("sending %d timestamp:%d %u %u",
-					len, timestamp + base,
-					offset, impl->psamples);
-			rtp_stream_emit_send_packet(impl, iov, 3);
-
-			impl->seq++;
-			len = 0;
-		}
-		if (len == 0) {
-			/* start new packet */
-			base = prev_offset = offset;
-			header.sequence_number = htons(impl->seq);
-			header.timestamp = htonl(impl->ts_offset + timestamp + base);
-
-			memcpy(&impl->buffer[len], event, size);
-			len += size;
-		} else {
-			delta = offset - prev_offset;
-			prev_offset = offset;
-			len += write_event(&impl->buffer[len], delta, event, size);
+				memcpy(&impl->buffer[len], event, size);
+				len += size;
+			} else {
+				delta = offset - prev_offset;
+				prev_offset = offset;
+				len += write_event(&impl->buffer[len], BUFFER_SIZE - len, delta, event, size);
+			}
 		}
 	}
 	if (len > 0) {
@@ -464,18 +520,17 @@ static void rtp_midi_process_capture(void *data)
 	struct impl *impl = data;
 	struct pw_buffer *buf;
 	struct spa_data *d;
-	uint32_t offs, size, timestamp, rate;
-	struct spa_pod *pod;
-	void *ptr;
+	uint32_t timestamp, rate;
+	struct spa_pod_parser parser;
+	struct spa_pod_frame frame;
+	struct spa_pod_sequence seq;
+	const void *seq_body;
 
 	if ((buf = pw_stream_dequeue_buffer(impl->stream)) == NULL) {
 		pw_log_info("Out of stream buffers: %m");
 		return;
 	}
 	d = buf->buffer->datas;
-
-	offs = SPA_MIN(d[0].chunk->offset, d[0].maxsize);
-	size = SPA_MIN(d[0].chunk->size, d[0].maxsize - offs);
 
 	if (SPA_LIKELY(impl->io_position)) {
 		rate = impl->io_position->clock.rate.denom;
@@ -485,11 +540,10 @@ static void rtp_midi_process_capture(void *data)
 		timestamp = 0;
 	}
 
-	ptr = SPA_PTROFF(d[0].data, offs, void);
 
-	if ((pod = spa_pod_from_data(ptr, size, 0, size)) == NULL)
-		goto done;
-	if (!spa_pod_is_sequence(pod))
+	spa_pod_parser_init_from_data(&parser, d[0].data, d[0].maxsize,
+			d[0].chunk->offset, d[0].chunk->size);
+	if (spa_pod_parser_push_sequence_body(&parser, &frame, &seq, &seq_body) < 0)
 		goto done;
 
 	if (!impl->have_sync) {
@@ -498,7 +552,7 @@ static void rtp_midi_process_capture(void *data)
 		impl->have_sync = true;
 	}
 
-	rtp_midi_flush_packets(impl, (struct spa_pod_sequence*)pod, timestamp, rate);
+	rtp_midi_flush_packets(impl, &parser, timestamp, rate);
 
 done:
 	pw_stream_queue_buffer(impl->stream, buf);

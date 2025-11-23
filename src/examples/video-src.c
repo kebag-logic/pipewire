@@ -15,11 +15,13 @@
 
 #include <spa/param/video/format-utils.h>
 #include <spa/param/tag-utils.h>
+#include <spa/param/dict-utils.h>
 #include <spa/debug/pod.h>
+#include <spa/debug/format.h>
 
 #include <pipewire/pipewire.h>
 
-#define BPP		3
+#define BPP		4
 #define CURSOR_WIDTH	64
 #define CURSOR_HEIGHT	64
 #define CURSOR_BPP	4
@@ -172,7 +174,7 @@ static void on_stream_state_changed(void *_data, enum pw_stream_state old, enum 
 {
 	struct data *data = _data;
 
-	printf("stream state: \"%s\"\n", pw_stream_state_as_string(state));
+	printf("stream state: \"%s\" %s\n", pw_stream_state_as_string(state), error ? error : "");
 
 	switch (state) {
 	case PW_STREAM_STATE_ERROR:
@@ -216,50 +218,54 @@ on_stream_param_changed(void *_data, uint32_t id, const struct spa_pod *param)
 	uint8_t params_buffer[1024];
 	struct spa_pod_builder b = SPA_POD_BUILDER_INIT(params_buffer, sizeof(params_buffer));
 	const struct spa_pod *params[5];
+	uint32_t n_params = 0;
 
-	if (param != NULL && id == SPA_PARAM_Tag) {
+	if (param != NULL && (id == SPA_PARAM_Tag || id == SPA_PARAM_PeerCapability)) {
 		spa_debug_pod(0, NULL, param);
 		return;
 	}
 	if (param == NULL || id != SPA_PARAM_Format)
 		return;
 
+	fprintf(stderr, "got format:\n");
+	spa_debug_format(2, NULL, param);
+
 	spa_format_video_raw_parse(param, &data->format);
 
 	data->stride = SPA_ROUND_UP_N(data->format.size.width * BPP, 4);
 
-	params[0] = spa_pod_builder_add_object(&b,
+	params[n_params++] = spa_pod_builder_add_object(&b,
 		SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers,
 		SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(8, 2, MAX_BUFFERS),
 		SPA_PARAM_BUFFERS_blocks,  SPA_POD_Int(1),
 		SPA_PARAM_BUFFERS_size,    SPA_POD_Int(data->stride * data->format.size.height),
 		SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(data->stride));
 
-	params[1] = spa_pod_builder_add_object(&b,
+	params[n_params++] = spa_pod_builder_add_object(&b,
 		SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
 		SPA_PARAM_META_type, SPA_POD_Id(SPA_META_Header),
 		SPA_PARAM_META_size, SPA_POD_Int(sizeof(struct spa_meta_header)));
 
-	params[2] = spa_pod_builder_add_object(&b,
+	params[n_params++] = spa_pod_builder_add_object(&b,
 		SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
 		SPA_PARAM_META_type, SPA_POD_Id(SPA_META_VideoDamage),
 		SPA_PARAM_META_size, SPA_POD_CHOICE_RANGE_Int(
 					sizeof(struct spa_meta_region) * 16,
 					sizeof(struct spa_meta_region) * 1,
 					sizeof(struct spa_meta_region) * 16));
-	params[3] = spa_pod_builder_add_object(&b,
+	params[n_params++] = spa_pod_builder_add_object(&b,
 		SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
 		SPA_PARAM_META_type, SPA_POD_Id(SPA_META_VideoCrop),
 		SPA_PARAM_META_size, SPA_POD_Int(sizeof(struct spa_meta_region)));
 #define CURSOR_META_SIZE(w,h)	(sizeof(struct spa_meta_cursor) + \
 				 sizeof(struct spa_meta_bitmap) + w * h * CURSOR_BPP)
-	params[4] = spa_pod_builder_add_object(&b,
+	params[n_params++] = spa_pod_builder_add_object(&b,
 		SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
 		SPA_PARAM_META_type, SPA_POD_Id(SPA_META_Cursor),
 		SPA_PARAM_META_size, SPA_POD_Int(
 			CURSOR_META_SIZE(CURSOR_WIDTH,CURSOR_HEIGHT)));
 
-	pw_stream_update_params(stream, params, 5);
+	pw_stream_update_params(stream, params, n_params);
 }
 
 static void
@@ -285,7 +291,8 @@ static void do_quit(void *userdata, int signal_number)
 int main(int argc, char *argv[])
 {
 	struct data data = { 0, };
-	const struct spa_pod *params[2];
+	const struct spa_pod *params[3];
+	uint32_t n_params = 0;
 	uint8_t buffer[1024];
 	struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
 
@@ -313,11 +320,11 @@ int main(int argc, char *argv[])
 			PW_KEY_NODE_SUPPORTS_REQUEST, "1",
 			NULL));
 
-	params[0] = spa_pod_builder_add_object(&b,
+	params[n_params++] = spa_pod_builder_add_object(&b,
 		SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
 		SPA_FORMAT_mediaType,       SPA_POD_Id(SPA_MEDIA_TYPE_video),
 		SPA_FORMAT_mediaSubtype,    SPA_POD_Id(SPA_MEDIA_SUBTYPE_raw),
-		SPA_FORMAT_VIDEO_format,    SPA_POD_Id(SPA_VIDEO_FORMAT_RGB),
+		SPA_FORMAT_VIDEO_format,    SPA_POD_Id(SPA_VIDEO_FORMAT_BGRA),
 		SPA_FORMAT_VIDEO_size,      SPA_POD_CHOICE_RANGE_Rectangle(
 						&SPA_RECTANGLE(320, 240),
 						&SPA_RECTANGLE(1, 1),
@@ -331,7 +338,13 @@ int main(int argc, char *argv[])
 		spa_tag_build_add_dict(&b,
 				&SPA_DICT_ITEMS(
 					SPA_DICT_ITEM("my-tag-key", "my-special-tag-value")));
-		params[1] = spa_tag_build_end(&b, &f);
+		params[n_params++] = spa_tag_build_end(&b, &f);
+	}
+	{
+		params[n_params++] = spa_param_dict_build_dict(&b, SPA_PARAM_Capability,
+				&SPA_DICT_ITEMS(
+					SPA_DICT_ITEM("my-capability-key", "my-capability-value")));
+
 	}
 
 	pw_stream_add_listener(data.stream,
@@ -344,7 +357,7 @@ int main(int argc, char *argv[])
 			  PW_ID_ANY,
 			  PW_STREAM_FLAG_DRIVER |
 			  PW_STREAM_FLAG_MAP_BUFFERS,
-			  params, 2);
+			  params, n_params);
 
 	pw_main_loop_run(data.loop);
 

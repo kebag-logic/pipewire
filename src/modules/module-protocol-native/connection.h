@@ -5,14 +5,18 @@
 #ifndef PIPEWIRE_PROTOCOL_NATIVE_CONNECTION_H
 #define PIPEWIRE_PROTOCOL_NATIVE_CONNECTION_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include <spa/utils/defs.h>
 #include <spa/utils/hook.h>
 
 #include <pipewire/extensions/protocol-native.h>
+
+#define MAX_DICT	1024
+#define MAX_PARAM_INFO	128
+#define MAX_PERMISSIONS	4096
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 struct pw_protocol_native_connection_events {
 #define PW_VERSION_PROTOCOL_NATIVE_CONNECTION_EVENTS	0

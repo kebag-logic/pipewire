@@ -5,12 +5,29 @@
 #include <math.h>
 
 #include <spa/utils/defs.h>
+#include <spa/support/log.h>
 
 #include "resample.h"
+
+#undef SPA_LOG_TOPIC_DEFAULT
+#define SPA_LOG_TOPIC_DEFAULT &resample_log_topic
+extern struct spa_log_topic resample_log_topic;
 
 typedef void (*resample_func_t)(struct resample *r,
         const void * SPA_RESTRICT src[], uint32_t ioffs, uint32_t *in_len,
         void * SPA_RESTRICT dst[], uint32_t ooffs, uint32_t *out_len);
+
+#define FIXP_SHIFT		32
+#define FIXP_SCALE		((uint64_t)1 << FIXP_SHIFT)
+#define FIXP_MASK		(FIXP_SCALE - 1)
+#define UINT32_TO_FIXP(v)	((struct fixp) { (uint64_t)((uint32_t)(v)) << FIXP_SHIFT })
+#define FLOAT_TO_FIXP(d)	((struct fixp) { (uint64_t)((d) * (float)FIXP_SCALE) })
+#define FIXP_TO_UINT32(f)	((f).value >> FIXP_SHIFT)
+#define FIXP_TO_FLOAT(f)	((f).value / (float)FIXP_SCALE)
+
+struct fixp {
+	uint64_t value;
+};
 
 struct resample_info {
 	uint32_t format;
@@ -27,13 +44,15 @@ struct native_data {
 	double rate;
 	uint32_t n_taps;
 	uint32_t n_phases;
-	uint32_t in_rate;
+	struct fixp in_rate;
 	uint32_t out_rate;
-	float phase;
+	struct fixp phase;
+	float pm;
 	uint32_t inc;
-	uint32_t frac;
+	struct fixp frac;
 	uint32_t filter_stride;
 	uint32_t filter_stride_os;
+	uint32_t gcd;
 	uint32_t hist;
 	float **history;
 	resample_func_t func;
@@ -84,25 +103,26 @@ DEFINE_RESAMPLER(full,arch)							\
 {										\
 	struct native_data *data = r->data;					\
 	uint32_t n_taps = data->n_taps, stride = data->filter_stride_os;	\
-	uint32_t index, phase, n_phases = data->out_rate;			\
+	uint32_t index;								\
 	uint32_t c, o, olen = *out_len, ilen = *in_len;				\
-	uint32_t inc = data->inc, frac = data->frac, ch = r->channels;		\
+	uint32_t inc = data->inc, ch = r->channels;				\
+	uint64_t frac = data->frac.value, phase = data->phase.value;		\
+	uint64_t denom = UINT32_TO_FIXP(data->out_rate).value;			\
 										\
 	index = ioffs;								\
-	phase = (uint32_t)data->phase;						\
 	for (o = ooffs; o < olen && index + n_taps <= ilen; o++) {		\
-		float *filter = &data->filter[phase * stride];			\
+		float *filter = &data->filter[(phase >> FIXP_SHIFT) * stride];	\
 		for (c = 0; c < ch; c++) {					\
 			const float *s = src[c];				\
 			float *d = dst[c];					\
 			inner_product_##arch(&d[o], &s[index],			\
 					filter, n_taps);			\
 		}								\
-		INC(index, phase, n_phases);					\
+		INC(index, phase, denom);					\
 	}									\
 	*in_len = index;							\
 	*out_len = o;								\
-	data->phase = phase;							\
+	data->phase.value = phase;						\
 }
 
 #define MAKE_RESAMPLER_INTER(arch)						\
@@ -110,17 +130,18 @@ DEFINE_RESAMPLER(inter,arch)							\
 {										\
 	struct native_data *data = r->data;					\
 	uint32_t index, stride = data->filter_stride;				\
-	uint32_t n_phases = data->n_phases, out_rate = data->out_rate;		\
 	uint32_t n_taps = data->n_taps;						\
 	uint32_t c, o, olen = *out_len, ilen = *in_len;				\
-	uint32_t inc = data->inc, frac = data->frac, ch = r->channels;          \
-	float phase;								\
+	uint32_t inc = data->inc, ch = r->channels;				\
+	uint32_t ph_max = data->n_phases - 1;					\
+	uint64_t frac = data->frac.value, phase = data->phase.value;		\
+	uint64_t denom = UINT32_TO_FIXP(data->out_rate).value;			\
+	float pm = data->pm;							\
 										\
 	index = ioffs;								\
-	phase = data->phase;							\
 	for (o = ooffs; o < olen && index + n_taps <= ilen; o++) {		\
-		float ph = phase * n_phases / out_rate;				\
-		uint32_t offset = (uint32_t)floorf(ph);				\
+		float ph = phase * pm;						\
+		uint32_t offset = SPA_MIN((uint32_t)floorf(ph), ph_max);	\
 		float *filter0 = &data->filter[(offset+0) * stride];		\
 		float *filter1 = &data->filter[(offset+1) * stride];		\
 		float pho = ph - offset;					\
@@ -130,11 +151,11 @@ DEFINE_RESAMPLER(inter,arch)							\
 			inner_product_ip_##arch(&d[o], &s[index],		\
 					filter0, filter1, pho, n_taps);		\
 		}								\
-		INC(index, phase, out_rate);					\
+		INC(index, phase, denom);					\
 	}									\
 	*in_len = index;							\
 	*out_len = o;								\
-	data->phase = phase;							\
+	data->phase.value = phase;						\
 }
 
 

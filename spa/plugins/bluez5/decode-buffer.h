@@ -21,8 +21,9 @@
  * The regular timer cycle cannot be aligned with this, so process()
  * may occur at any time.
  *
- * The buffer level is the position of last received sample, relative to the current
- * playback position. If it is larger than duration, there is no underrun.
+ * The instantaneous buffer level is the time position (in samples) of the last
+ * received sample, relative to the nominal time position of the last sample of the last
+ * received packet. If it is always larger than duration, there is no underrun.
  *
  * The rate correction aims to maintain the average level at a safety margin.
  */
@@ -35,6 +36,7 @@
 #include <sys/socket.h>
 #include <linux/net_tstamp.h>
 #include <linux/errqueue.h>
+#include <bluetooth/bluetooth.h>
 
 #include <spa/utils/defs.h>
 #include <spa/support/log.h>
@@ -45,6 +47,12 @@
 #define BUFFERING_SHORT_MSEC		1000
 #define BUFFERING_RATE_DIFF_MAX		0.005
 
+#ifndef BT_PKT_SEQNUM
+#define BT_PKT_SEQNUM			22
+#endif
+#ifndef BT_SCM_PKT_SEQNUM
+#define BT_SCM_PKT_SEQNUM		0x05
+#endif
 
 struct spa_bt_decode_buffer
 {
@@ -52,6 +60,13 @@ struct spa_bt_decode_buffer
 
 	uint32_t frame_size;
 	uint32_t rate;
+	int64_t avg_period;
+	double rate_diff_max;
+
+	int32_t target;		/**< target buffer (0: automatic) */
+	int32_t max_extra;
+
+	bool no_overrun_drop;
 
 	uint8_t *buffer_decoded;
 	uint32_t buffer_size;
@@ -65,15 +80,20 @@ struct spa_bt_decode_buffer
 	struct spa_bt_rate_control ctl;
 	double corr;
 
-	uint32_t duration;
 	uint32_t pos;
 
-	int32_t target;		/**< target buffer (0: automatic) */
-	int32_t max_extra;
-
-	int32_t level;
-	uint64_t next_nsec;
+	int64_t duration_ns;
+	int64_t next_nsec;
 	double rate_diff;
+	int32_t delay;
+	int32_t delay_frac;
+
+	double level;
+
+	struct {
+		int64_t nsec;
+		int64_t position;
+	} rx;
 
 	uint8_t buffering:1;
 };
@@ -92,6 +112,8 @@ static inline int spa_bt_decode_buffer_init(struct spa_bt_decode_buffer *this, s
 	this->target = 0;
 	this->buffering = true;
 	this->max_extra = INT32_MAX;
+	this->avg_period = BUFFERING_SHORT_MSEC * SPA_NSEC_PER_MSEC;
+	this->rate_diff_max = BUFFERING_RATE_DIFF_MAX;
 
 	spa_bt_rate_control_init(&this->ctl, 0);
 
@@ -168,35 +190,35 @@ static inline void *spa_bt_decode_buffer_get_write(struct spa_bt_decode_buffer *
 	return SPA_PTROFF(this->buffer_decoded, this->write_index, void);
 }
 
+static inline size_t spa_bt_decode_buffer_get_size(struct spa_bt_decode_buffer *this)
+{
+	return this->write_index - this->read_index;
+}
+
 static inline void spa_bt_decode_buffer_write_packet(struct spa_bt_decode_buffer *this, uint32_t size, uint64_t nsec)
 {
-	int32_t remain;
-	uint32_t avail;
+	const int32_t duration = this->duration_ns * this->rate / SPA_NSEC_PER_SEC;
+
+	if (nsec) {
+		this->rx.nsec = nsec;
+		this->rx.position = size / this->frame_size;
+	} else {
+		this->rx.position += size / this->frame_size;
+	}
 
 	spa_assert(size % this->frame_size == 0);
 	this->write_index += size;
 	spa_bt_ptp_update(&this->packet_size, size / this->frame_size, size / this->frame_size);
 
-	if (nsec && this->next_nsec && this->rate_diff != 0.0) {
-		int64_t dt = (this->next_nsec >= nsec) ?
-			(int64_t)(this->next_nsec - nsec) : -(int64_t)(nsec - this->next_nsec);
-		remain = (int32_t)SPA_CLAMP(dt * this->rate_diff * this->rate / SPA_NSEC_PER_SEC,
-				-(int32_t)this->duration, this->duration);
+	if (this->rx.nsec && this->next_nsec) {
+		uint32_t avail = spa_bt_decode_buffer_get_size(this) / this->frame_size;
+		int64_t dt = this->next_nsec - this->rx.nsec;
+
+		this->level = dt * this->rate_diff * this->rate / SPA_NSEC_PER_SEC
+			+ avail + this->delay + this->delay_frac/1e9 - this->rx.position;
 	} else {
-		remain = 0;
+		this->level = spa_bt_decode_buffer_get_size(this) / this->frame_size - duration;
 	}
-
-	spa_bt_decode_buffer_get_read(this, &avail);
-	this->level = avail / this->frame_size + remain;
-}
-
-static inline void spa_bt_decode_buffer_recover(struct spa_bt_decode_buffer *this)
-{
-	int32_t size = (this->write_index - this->read_index) / this->frame_size;
-
-	this->level = size;
-	this->corr = 1.0;
-	spa_bt_rate_control_init(&this->ctl, size);
 }
 
 static inline void spa_bt_decode_buffer_set_target_latency(struct spa_bt_decode_buffer *this, int32_t samples)
@@ -209,39 +231,59 @@ static inline void spa_bt_decode_buffer_set_max_extra_latency(struct spa_bt_deco
 	this->max_extra = samples;
 }
 
-static inline int32_t spa_bt_decode_buffer_get_target_latency(struct spa_bt_decode_buffer *this)
+static inline int32_t spa_bt_decode_buffer_get_auto_latency(struct spa_bt_decode_buffer *this)
 {
-	const int32_t duration = this->duration;
+	const int32_t duration = this->duration_ns * this->rate / SPA_NSEC_PER_SEC;
 	const int32_t packet_size = SPA_CLAMP(this->packet_size.max, 0, INT32_MAX/8);
 	const int32_t max_buf = (this->buffer_size - this->buffer_reserve) / this->frame_size;
 	const int32_t spike = SPA_CLAMP(this->spike.max, 0, max_buf);
 	int32_t target;
 
-	if (this->target)
-		target = this->target;
-	else
-		target = SPA_CLAMP(SPA_ROUND_UP(SPA_MAX(spike * 3/2, duration), 
-						SPA_CLAMP((int)this->rate / 50, 1, INT32_MAX)),
-				duration, max_buf - 2*packet_size);
+	target = SPA_CLAMP(SPA_ROUND_UP(SPA_MAX(spike * 3/2, duration),
+					SPA_CLAMP((int)this->rate / 50, 1, INT32_MAX)),
+			duration, max_buf - 2*packet_size);
 
 	return SPA_MIN(target, duration + SPA_CLAMP(this->max_extra, 0, INT32_MAX - duration));
 }
 
-static inline void spa_bt_decode_buffer_process(struct spa_bt_decode_buffer *this, uint32_t samples, uint32_t duration,
-		double rate_diff, uint64_t next_nsec)
+static inline int32_t spa_bt_decode_buffer_get_target_latency(struct spa_bt_decode_buffer *this)
+{
+	if (this->target)
+		return this->target;
+	return spa_bt_decode_buffer_get_auto_latency(this);
+}
+
+static inline void spa_bt_decode_buffer_recover(struct spa_bt_decode_buffer *this)
+{
+	int32_t target = spa_bt_decode_buffer_get_target_latency(this);
+
+	this->rx.nsec = 0;
+	this->corr = 1.0;
+	spa_bt_rate_control_init(&this->ctl, target * SPA_NSEC_PER_SEC / this->rate);
+	spa_bt_decode_buffer_write_packet(this, 0, 0);
+}
+
+static inline void spa_bt_decode_buffer_process(struct spa_bt_decode_buffer *this, uint32_t samples, int64_t duration_ns,
+		double rate_diff, int64_t next_nsec, int32_t delay, int32_t delay_frac)
 {
 	const uint32_t data_size = samples * this->frame_size;
 	const int32_t packet_size = SPA_CLAMP(this->packet_size.max, 0, INT32_MAX/8);
-	const int32_t max_level = SPA_MAX(8 * packet_size, (int32_t)duration);
-	const uint32_t avg_period = (uint64_t)this->rate * BUFFERING_SHORT_MSEC / 1000;
 	int32_t target;
 	uint32_t avail;
+	double level;
 
 	this->rate_diff = rate_diff;
 	this->next_nsec = next_nsec;
+	this->delay = delay;
+	this->delay_frac = delay_frac;
 
-	if (SPA_UNLIKELY(duration != this->duration)) {
-		this->duration = duration;
+	/* The fractional delay is given at the start of current cycle. Make it relative
+	 * to next_nsec used for the level calculations.
+	 */
+	this->delay_frac += (int32_t)(1e9 * samples - duration_ns * this->rate * this->rate_diff);
+
+	if (SPA_UNLIKELY(duration_ns != this->duration_ns)) {
+		this->duration_ns = duration_ns;
 		spa_bt_decode_buffer_recover(this);
 	}
 
@@ -254,62 +296,65 @@ static inline void spa_bt_decode_buffer_process(struct spa_bt_decode_buffer *thi
 
 		spa_log_trace(this->log, "%p buffering size:%d", this, (int)size);
 
-		if (size >= SPA_MAX((int)duration, target))
+		if (size >= SPA_MAX((int)samples, target))
 			this->buffering = false;
 		else
 			return;
 
-		spa_bt_ptp_update(&this->spike, packet_size, duration);
+		spa_bt_ptp_update(&this->spike, packet_size, samples);
 		spa_bt_decode_buffer_recover(this);
 	}
 
 	spa_bt_decode_buffer_get_read(this, &avail);
 
 	/* Track buffer level */
-	this->level = SPA_MAX(this->level, -max_level);
+	level = SPA_MAX(this->level, 0);
 
-	spa_bt_ptp_update(&this->spike, (int32_t)this->ctl.avg - this->level, duration);
+	spa_bt_ptp_update(&this->spike,
+			(int32_t)(this->ctl.avg * this->rate / SPA_NSEC_PER_SEC - level),
+			samples);
 
-	if (this->level > SPA_MAX(4 * target, 3*(int32_t)duration) &&
-			avail > data_size) {
+	if (!this->no_overrun_drop &&
+			level > SPA_MAX(4 * target, 3*(int32_t)samples) && avail > data_size) {
 		/* Lagging too much: drop data */
 		uint32_t size = SPA_MIN(avail - data_size,
-				(this->level - target) * this->frame_size);
+				((int32_t)ceil(level) - target) * this->frame_size);
 
 		spa_bt_decode_buffer_read(this, size);
-		spa_log_trace(this->log, "%p overrun samples:%d level:%d target:%d",
+		spa_log_trace(this->log, "%p overrun samples:%d level:%.2f target:%d",
 				this, (int)size/this->frame_size,
-				(int)this->level, (int)target);
+				level, (int)target);
 
 		spa_bt_decode_buffer_recover(this);
 	}
 
-	this->pos += duration;
-	if (this->pos > this->rate) {
-		spa_log_debug(this->log,
-				"%p avg:%d target:%d level:%d buffer:%d spike:%d corr:%f",
+	this->pos += samples;
+
+	enum spa_log_level log_level = (this->pos > this->rate) ? SPA_LOG_LEVEL_DEBUG : SPA_LOG_LEVEL_TRACE;
+	if (SPA_UNLIKELY(spa_log_level_topic_enabled(this->log, SPA_LOG_TOPIC_DEFAULT, log_level))) {
+		spa_log_lev(this->log, log_level,
+				"%p avg:%.2f target:%d level:%.2f buffer:%d spike:%d corr:%g",
 				this,
-				(int)this->ctl.avg,
+				this->ctl.avg * this->rate / SPA_NSEC_PER_SEC,
 				(int)target,
-				(int)this->level,
+				level,
 				(int)(avail / this->frame_size),
 				(int)this->spike.max,
-				(double)this->corr);
+				(double)this->corr - 1);
 		this->pos = 0;
 	}
 
 	this->corr = spa_bt_rate_control_update(&this->ctl,
-			this->level, target, duration, avg_period,
-			BUFFERING_RATE_DIFF_MAX);
-
-	this->level -= duration;
+			level * SPA_NSEC_PER_SEC / this->rate,
+			((double)target + 0.5/this->rate) * SPA_NSEC_PER_SEC / this->rate,
+			duration_ns, this->avg_period, this->rate_diff_max);
 
 	spa_bt_decode_buffer_get_read(this, &avail);
 	if (avail < data_size) {
-		spa_log_trace(this->log, "%p underrun samples:%d", this,
+		spa_log_debug(this->log, "%p underrun samples:%d", this,
 				(data_size - avail) / this->frame_size);
 		this->buffering = true;
-		spa_bt_ptp_update(&this->spike, (int32_t)this->ctl.avg - this->level, duration);
+		spa_bt_ptp_update(&this->spike, samples, 0);
 	}
 }
 
@@ -358,10 +403,11 @@ static inline void spa_bt_recvmsg_update_clock(struct spa_bt_recvmsg_data *data,
 	data->err += (SPA_ABS(err) - data->err) / n_avg;
 }
 
-static inline ssize_t spa_bt_recvmsg(struct spa_bt_recvmsg_data *r, void *buf, size_t max_size, uint64_t *rx_time)
+static inline ssize_t spa_bt_recvmsg(struct spa_bt_recvmsg_data *r, void *buf, size_t max_size, uint64_t *rx_time,
+		int *seqnum)
 {
 	union {
-		char buf[CMSG_SPACE(sizeof(struct scm_timestamping))];
+		char buf[CMSG_SPACE(sizeof(struct scm_timestamping)) + CMSG_SPACE(sizeof(uint16_t))];
 		struct cmsghdr align;
 	} control;
 	struct iovec data = {
@@ -378,6 +424,8 @@ static inline ssize_t spa_bt_recvmsg(struct spa_bt_recvmsg_data *r, void *buf, s
 	uint64_t t = 0, now;
 	ssize_t res;
 
+	*seqnum = -1;
+
 	res = recvmsg(r->fd, &msg, MSG_DONTWAIT);
 	if (res < 0 || !rx_time)
 		return res;
@@ -387,12 +435,12 @@ static inline ssize_t spa_bt_recvmsg(struct spa_bt_recvmsg_data *r, void *buf, s
 	for (cmsg = CMSG_FIRSTHDR(&msg); cmsg; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
 		struct scm_timestamping *tss;
 
-		if (cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_TIMESTAMPING)
-			continue;
-
-		tss = (struct scm_timestamping *)CMSG_DATA(cmsg);
-		t = SPA_TIMESPEC_TO_NSEC(&tss->ts[0]);
-		break;
+		if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_TIMESTAMPING) {
+			tss = (struct scm_timestamping *)CMSG_DATA(cmsg);
+			t = SPA_TIMESPEC_TO_NSEC(&tss->ts[0]);
+		} else if (cmsg->cmsg_level == SOL_BLUETOOTH && cmsg->cmsg_type == BT_SCM_PKT_SEQNUM) {
+			*seqnum = *((uint16_t *)CMSG_DATA(cmsg));
+		}
 	}
 
 	if (!t) {
@@ -406,8 +454,8 @@ static inline ssize_t spa_bt_recvmsg(struct spa_bt_recvmsg_data *r, void *buf, s
 	if (*rx_time > now || *rx_time + 20 * SPA_NSEC_PER_MSEC < now)
 		*rx_time = now;
 
-	spa_log_trace(r->log, "%p: rx:%" PRIu64 " now:%" PRIu64 " d:%"PRIu64" off:%"PRIi64,
-			r, *rx_time, now, now - *rx_time, r->offset);
+	spa_log_trace(r->log, "%p: rx:%" PRIu64 " now:%" PRIu64 " d:%"PRIu64" off:%"PRIi64" sn:%d",
+			r, *rx_time, now, now - *rx_time, r->offset, *seqnum);
 
 	return res;
 }
@@ -418,6 +466,7 @@ static inline void spa_bt_recvmsg_init(struct spa_bt_recvmsg_data *data, int fd,
 {
 	int flags = 0;
 	socklen_t len = sizeof(flags);
+	uint32_t opt;
 
 	data->log = log;
 	data->data_system = data_system;
@@ -431,6 +480,10 @@ static inline void spa_bt_recvmsg_init(struct spa_bt_recvmsg_data *data, int fd,
 	flags |= SOF_TIMESTAMPING_SOFTWARE | SOF_TIMESTAMPING_RX_SOFTWARE;
 	if (setsockopt(fd, SOL_SOCKET, SO_TIMESTAMPING, &flags, sizeof(flags)) < 0)
 		spa_log_info(log, "failed to set SO_TIMESTAMPING");
+
+	opt = 1;
+	if (setsockopt(fd, SOL_BLUETOOTH, BT_PKT_SEQNUM, &opt, sizeof(opt)) < 0)
+		spa_log_info(log, "failed to set BT_PKT_SEQNUM");
 }
 
 #endif

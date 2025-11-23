@@ -156,6 +156,7 @@ PW_LOG_TOPIC_STATIC(mod_topic, "mod." NAME);
 #define DEFAULT_LOOP		false
 
 #define MAX_SDP			2048
+#define MAX_CHANNELS		SPA_AUDIO_MAX_CHANNELS
 
 #define USAGE	"( local.ifname=<local interface name to use> ) "					\
 		"( sap.ip=<SAP IP address to send announce, default:"DEFAULT_SAP_IP"> ) "		\
@@ -247,10 +248,21 @@ struct node {
 	struct session *session;
 };
 
+struct igmp_recovery {
+	struct pw_timer timer;
+	int socket_fd;
+	struct sockaddr_storage mcast_addr;
+	socklen_t mcast_len;
+	uint32_t if_index;
+	bool is_ipv6;
+	uint32_t deadline;
+};
+
 struct impl {
 	struct pw_properties *props;
 
 	struct pw_loop *loop;
+	struct pw_timer_queue *timer_queue;
 
 	struct pw_impl_module *module;
 	struct spa_hook module_listener;
@@ -263,7 +275,11 @@ struct impl {
 	struct pw_registry *registry;
 	struct spa_hook registry_listener;
 
-	struct spa_source *timer;
+	struct pw_timer sap_send_timer;
+
+	/* This timer is used when the first start_sap() call fails because
+	 * of an ENODEV error (see the start_sap() code for details) */
+	struct pw_timer start_sap_retry_timer;
 
 	char *ifname;
 	uint32_t ttl;
@@ -279,6 +295,10 @@ struct impl {
 	struct spa_source *sap_source;
 	uint32_t cleanup_interval;
 
+	/* IGMP recovery (triggers when no SAP packets are
+	 * received after the recovery deadline is reached) */
+	struct igmp_recovery igmp_recovery;
+
 	uint32_t max_sessions;
 	uint32_t n_sessions;
 	struct spa_list sessions;
@@ -286,7 +306,7 @@ struct impl {
 	char *extra_attrs_preamble;
 	char *extra_attrs_end;
 
-	char *ptp_mgmt_socket;
+	char *ptp_mgmt_socket_path;
 	int ptp_fd;
 	uint32_t ptp_seq;
 	uint8_t clock_id[8];
@@ -320,6 +340,7 @@ static const struct format_info *find_audio_format_info(const char *mime)
 	return NULL;
 }
 
+static int start_sap(struct impl *impl);
 static int send_sap(struct impl *impl, struct session *sess, bool bye);
 
 
@@ -381,7 +402,7 @@ static bool is_multicast(struct sockaddr *sa, socklen_t salen)
 	return false;
 }
 
-static int make_unix_socket(const char *path) {
+static int make_unix_ptp_mgmt_socket(const char *path) {
 	struct sockaddr_un addr;
 
 	spa_autoclose int fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
@@ -417,7 +438,7 @@ static int make_send_socket(
 
 	af = src->ss_family;
 	if ((fd = socket(af, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0)) < 0) {
-		pw_log_error("socket failed: %m");
+		pw_log_error("socket() failed: %m");
 		return -errno;
 	}
 	if (bind(fd, (struct sockaddr*)src, src_len) < 0) {
@@ -449,6 +470,9 @@ static int make_send_socket(
 				pw_log_warn("setsockopt(IPV6_MULTICAST_HOPS) failed: %m");
 		}
 	}
+
+	pw_log_info("sender socket up and running");
+
 	return fd;
 error:
 	close(fd);
@@ -456,7 +480,7 @@ error:
 }
 
 static int make_recv_socket(struct sockaddr_storage *sa, socklen_t salen,
-		char *ifname)
+		char *ifname, struct igmp_recovery *igmp_recovery)
 {
 	int af, fd, val, res;
 	struct ifreq req;
@@ -466,13 +490,13 @@ static int make_recv_socket(struct sockaddr_storage *sa, socklen_t salen,
 
 	af = sa->ss_family;
 	if ((fd = socket(af, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0)) < 0) {
-		pw_log_error("socket failed: %m");
+		pw_log_error("socket() failed: %m");
 		return -errno;
 	}
 	val = 1;
 	if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val)) < 0) {
 		res = -errno;
-		pw_log_error("setsockopt failed: %m");
+		pw_log_error("setsockopt() failed: %m");
 		goto error;
 	}
 	spa_zero(req);
@@ -526,6 +550,16 @@ static int make_recv_socket(struct sockaddr_storage *sa, socklen_t salen,
 		goto error;
 	}
 
+	/* Store multicast info for recovery */
+	igmp_recovery->socket_fd = fd;
+	igmp_recovery->mcast_addr = ba;
+	igmp_recovery->mcast_len = salen;
+	igmp_recovery->if_index = req.ifr_ifindex;
+	igmp_recovery->is_ipv6 = (af == AF_INET6);
+	pw_log_debug("stored %s multicast info: socket_fd=%d, "
+			"if_index=%d", igmp_recovery->is_ipv6 ?
+			"IPv6" : "IPv4", fd, req.ifr_ifindex);
+
 	if (bind(fd, (struct sockaddr*)&ba, salen) < 0) {
 		res = -errno;
 		pw_log_error("bind() failed: %m");
@@ -538,16 +572,24 @@ static int make_recv_socket(struct sockaddr_storage *sa, socklen_t salen,
 			goto error;
 		}
 	}
+
+	pw_log_info("receiver socket up and running");
+
 	return fd;
 error:
 	close(fd);
 	return res;
 }
 
-static void update_ts_refclk(struct impl *impl)
+static bool update_ts_refclk(struct impl *impl)
 {
-	if (!impl->ptp_mgmt_socket || impl->ptp_fd < 0)
-		return;
+	if (!impl->ptp_mgmt_socket_path)
+		return false;
+	if (impl->ptp_fd < 0) {
+		impl->ptp_fd = make_unix_ptp_mgmt_socket(impl->ptp_mgmt_socket_path);
+		if (impl->ptp_fd < 0)
+			return false;
+	}
 
 	// Read if something is left in the socket
 	int avail;
@@ -579,13 +621,19 @@ static void update_ts_refclk(struct impl *impl)
 
 	if (write(impl->ptp_fd, &req, sizeof(req)) == -1) {
 		pw_log_warn("Failed to send PTP management request: %m");
-		return;
+		if (errno != ENOTCONN)
+			return false;
+		close(impl->ptp_fd);
+		impl->ptp_fd = make_unix_ptp_mgmt_socket(impl->ptp_mgmt_socket_path);
+		if (impl->ptp_fd > -1)
+			pw_log_info("Reopened PTP management socket");
+		return false;
 	}
 
 	uint8_t buf[sizeof(struct ptp_management_msg) + sizeof(struct ptp_parent_data_set)];
 	if (read(impl->ptp_fd, &buf, sizeof(buf)) == -1) {
 		pw_log_warn("Failed to receive PTP management response: %m");
-		return;
+		return false;
 	}
 
 	struct ptp_management_msg res = *(struct ptp_management_msg *)buf;
@@ -594,27 +642,27 @@ static void update_ts_refclk(struct impl *impl)
 
 	if ((res.ver & 0x0f) != 2) {
 		pw_log_warn("PTP major version is %d, expected 2", res.ver);
-		return;
+		return false;
 	}
 
 	if ((res.major_sdo_id_message_type & 0x0f) != PTP_MESSAGE_TYPE_MANAGEMENT) {
 		pw_log_warn("PTP management returned type %x, expected management", res.major_sdo_id_message_type);
-		return;
+		return false;
 	}
 
 	if (res.action != PTP_MGMT_ACTION_RESPONSE) {
 		pw_log_warn("PTP management returned action %d, expected response", res.action);
-		return;
+		return false;
 	}
 
 	if (be16toh(res.tlv_type_be) != PTP_TLV_TYPE_MGMT) {
 		pw_log_warn("PTP management returned tlv type %d, expected management", be16toh(res.tlv_type_be));
-		return;
+		return false;
 	}
 
 	if (be16toh(res.management_id_be) != PTP_MGMT_ID_PARENT_DATA_SET) {
 		pw_log_warn("PTP management returned ID %d, expected PARENT_DATA_SET", be16toh(res.management_id_be));
-		return;
+		return false;
 	}
 
 	uint16_t data_len = be16toh(res.management_message_length_be) - 2;
@@ -637,7 +685,8 @@ static void update_ts_refclk(struct impl *impl)
 	  );
 
 	uint8_t *gmid = parent.gm_clock_id;
-	if (memcmp(gmid, impl->gm_id, 8) != 0)
+	bool gmid_changed = false;
+	if (memcmp(gmid, impl->gm_id, 8) != 0) {
 		pw_log_info(
 			"GM ID: IEEE1588-2008:%02X-%02X-%02X-%02X-%02X-%02X-%02X-%02X:%d",
 			gmid[0],
@@ -650,29 +699,65 @@ static void update_ts_refclk(struct impl *impl)
 			gmid[7],
 			0 /* domain */
 	  );
+	  gmid_changed = true;
+	}
 
 	// When GM is not equal to own clock we are clocked by external master
 	pw_log_debug("Synced to GM: %s", (memcmp(cid, gmid, 8) != 0) ? "true" : "false");
 
 	memcpy(impl->clock_id, cid, 8);
 	memcpy(impl->gm_id, gmid, 8);
+	return gmid_changed;
 }
 
-static int make_sdp(struct impl *impl, struct session *sess, char *buffer, size_t buffer_size)
+static uint16_t generate_hash(uint16_t prev)
+{
+	uint16_t hash = pw_rand32();
+	if (hash == prev) hash++;
+	if (hash == 0) hash++;
+	return hash;
+}
+
+static int make_sdp(struct impl *impl, struct session *sess, char *buffer, size_t buffer_size, bool new)
 {
 	char src_addr[64], dst_addr[64], dst_ttl[8], ptime[32];
 	struct sdp_info *sdp = &sess->info;
 	bool src_ip4, dst_ip4;
 	bool multicast;
-	const char *user_name;
+	const char *user_name, *str;
 	struct spa_strbuf buf;
 	int res;
+	struct pw_properties *props = sess->props;
 
 	if ((res = pw_net_get_ip(&impl->src_addr, src_addr, sizeof(src_addr), &src_ip4, NULL)) < 0)
 		return res;
 
 	if ((res = pw_net_get_ip(&sdp->dst_addr, dst_addr, sizeof(dst_addr), &dst_ip4, NULL)) < 0)
 		return res;
+
+	if (new) {
+		/* update the version and hash */
+		sdp->hash = generate_hash(sdp->hash);
+		if ((str = pw_properties_get(props, "sess.id")) != NULL) {
+			if (!spa_atou32(str, &sdp->session_id, 10)) {
+				pw_log_error("Invalid session id: %s (must be a uint32)", str);
+				return -EINVAL;
+			}
+			sdp->t_ntp = pw_properties_get_uint32(props, "rtp.ntp",
+					(uint32_t) time(NULL) + 2208988800U + impl->n_sessions);
+		} else {
+			sdp->session_id = (uint32_t) time(NULL) + 2208988800U + impl->n_sessions;
+			sdp->t_ntp = pw_properties_get_uint32(props, "rtp.ntp", sdp->session_id);
+		}
+		if ((str = pw_properties_get(props, "sess.version")) != NULL) {
+			if (!spa_atou32(str, &sdp->session_version, 10)) {
+				pw_log_error("Invalid session version: %s (must be a uint32)", str);
+				return -EINVAL;
+			}
+		} else {
+			sdp->session_version = sdp->t_ntp;
+		}
+	}
 
 	if ((user_name = pw_get_user_name()) == NULL)
 		user_name = "-";
@@ -835,7 +920,7 @@ static int send_sap(struct impl *impl, struct session *sess, bool bye)
          * socket needs to be open for us to get the interface address (which
          * happens above. So let's create the SDP now, if needed. */
         if (!sess->has_sdp) {
-		res = make_sdp(impl, sess, sess->sdp, sizeof(sess->sdp));
+		res = make_sdp(impl, sess, sess->sdp, sizeof(sess->sdp), true);
 		if (res != 0) {
 			pw_log_error("Failed to create SDP: %s", spa_strerror(res));
 			return res;
@@ -883,18 +968,121 @@ static int send_sap(struct impl *impl, struct session *sess, bool bye)
 	return res;
 }
 
-static void on_timer_event(void *data, uint64_t expirations)
+static void on_igmp_recovery_timer_event(void *data)
+{
+	struct impl *impl = data;
+	char addr[128];
+	int res = 0;
+
+	/* Only attempt recovery if we have a valid socket and multicast address */
+	if (impl->igmp_recovery.socket_fd < 0) {
+		pw_log_debug("no socket, skipping IGMP recovery");
+		goto finish;
+	}
+
+	pw_net_get_ip(&impl->igmp_recovery.mcast_addr, addr, sizeof(addr), NULL, NULL);
+	pw_log_debug("IGMP recovery triggered for %s", addr);
+
+	/* Force IGMP membership refresh by leaving the group first, then rejoin */
+	if (impl->igmp_recovery.is_ipv6) {
+		struct ipv6_mreq mr6;
+		memset(&mr6, 0, sizeof(mr6));
+		mr6.ipv6mr_multiaddr = ((struct sockaddr_in6*)&impl->igmp_recovery.mcast_addr)->sin6_addr;
+		mr6.ipv6mr_interface = impl->igmp_recovery.if_index;
+
+		/* Leave the group first */
+		res = setsockopt(impl->igmp_recovery.socket_fd, IPPROTO_IPV6, IPV6_LEAVE_GROUP,
+					&mr6, sizeof(mr6));
+		if (SPA_LIKELY(res == 0)) {
+			pw_log_debug("left IPv6 multicast group");
+		} else {
+			if (errno == EADDRNOTAVAIL) {
+				pw_log_debug("attempted to leave IPv6 multicast group, but "
+						"membership was already silently dropped");
+			} else {
+				pw_log_warn("failed to leave IPv6 multicast group: %m");
+			}
+		}
+
+		res = setsockopt(impl->igmp_recovery.socket_fd, IPPROTO_IPV6, IPV6_JOIN_GROUP,
+				&mr6, sizeof(mr6));
+		if (res < 0) {
+			pw_log_warn("failed to re-join IPv6 multicast group: %m");
+		} else {
+			pw_log_debug("re-joined IPv6 multicast group successfully");
+		}
+	} else {
+		struct ip_mreqn mr4;
+		memset(&mr4, 0, sizeof(mr4));
+		mr4.imr_multiaddr = ((struct sockaddr_in*)&impl->igmp_recovery.mcast_addr)->sin_addr;
+		mr4.imr_ifindex = impl->igmp_recovery.if_index;
+
+		/* Leave the group first */
+		res = setsockopt(impl->igmp_recovery.socket_fd, IPPROTO_IP, IP_DROP_MEMBERSHIP,
+					&mr4, sizeof(mr4));
+		if (SPA_LIKELY(res == 0)) {
+			pw_log_debug("left IPv4 multicast group");
+		} else {
+			if (errno == EADDRNOTAVAIL) {
+				pw_log_debug("attempted to leave IPv4 multicast group, but "
+						"membership was already silently dropped");
+			} else {
+				pw_log_warn("failed to leave IPv4 multicast group: %m");
+			}
+		}
+
+		res = setsockopt(impl->igmp_recovery.socket_fd, IPPROTO_IP, IP_ADD_MEMBERSHIP,
+				&mr4, sizeof(mr4));
+		if (res < 0) {
+			pw_log_warn("failed to re-join IPv4 multicast group: %m");
+		} else {
+			pw_log_debug("re-joined IPv4 multicast group successfully");
+		}
+	}
+
+finish:
+	/* If rejoining failed, try again in 1 second. This can happen
+	 * for example when the network interface went down, and is not
+	 * yet up and running again, and ENODEV is returned as a result.
+	 * Otherwise, continue with the usual deadline. */
+	pw_timer_queue_add(impl->timer_queue, &impl->igmp_recovery.timer,
+			&impl->igmp_recovery.timer.timeout,
+			((res == 0) ? impl->igmp_recovery.deadline : 1) * SPA_NSEC_PER_SEC,
+			on_igmp_recovery_timer_event, impl);
+}
+
+static void rearm_igmp_recovery_timer(struct impl *impl)
+{
+	pw_timer_queue_cancel(&impl->igmp_recovery.timer);
+	pw_timer_queue_add(impl->timer_queue, &impl->igmp_recovery.timer,
+			NULL, impl->igmp_recovery.deadline * SPA_NSEC_PER_SEC,
+			on_igmp_recovery_timer_event, impl);
+}
+
+static void on_sap_send_timer_event(void *data)
 {
 	struct impl *impl = data;
 	struct session *sess, *tmp;
 	uint64_t timestamp, interval;
+	bool clk_changed;
+	int res;
 
 	timestamp = get_time_nsec(impl);
 	interval = impl->cleanup_interval * SPA_NSEC_PER_SEC;
-	update_ts_refclk(impl);
+	clk_changed = update_ts_refclk(impl);
 
 	spa_list_for_each_safe(sess, tmp, &impl->sessions, link) {
 		if (sess->announce) {
+			if (clk_changed) {
+				// The clock has changed: Send bye and create new SDP.
+				send_sap(impl, sess, 1);
+
+				res = make_sdp(impl, sess, sess->sdp, sizeof(sess->sdp), true);
+				if (res != 0)
+					pw_log_error("Failed to create SDP: %s", spa_strerror(res));
+				else
+					sess->has_sdp = true;
+			}
 			send_sap(impl, sess, 0);
 		} else {
 			if (sess->timestamp + interval < timestamp) {
@@ -905,6 +1093,16 @@ static void on_timer_event(void *data, uint64_t expirations)
 
 		}
 	}
+	pw_timer_queue_add(impl->timer_queue, &impl->sap_send_timer,
+			&impl->sap_send_timer.timeout, SAP_INTERVAL_SEC * SPA_NSEC_PER_SEC,
+			on_sap_send_timer_event, impl);
+}
+
+static void on_start_sap_retry_timer_event(void *data)
+{
+	struct impl *impl = data;
+	pw_log_debug("trying again to start SAP send after previous attempt failed with ENODEV");
+	start_sap(impl);
 }
 
 static struct session *session_find(struct impl *impl, const struct sdp_info *info)
@@ -912,6 +1110,7 @@ static struct session *session_find(struct impl *impl, const struct sdp_info *in
 	struct session *sess;
 	spa_list_for_each(sess, &impl->sessions, link) {
 		if (info->hash == sess->info.hash &&
+		    info->dst_port == sess->info.dst_port &&
 		    spa_streq(info->origin, sess->info.origin))
 			return sess;
 	}
@@ -1021,42 +1220,19 @@ static struct session *session_new_announce(struct impl *impl, struct node *node
 
 	/* see if we can make an SDP, will fail for the first session because we
 	 * haven't got the SAP socket open yet */
-	res = make_sdp(impl, sess, buffer, sizeof(buffer));
+	res = make_sdp(impl, sess, buffer, sizeof(buffer), false);
 
 	/* we had no sdp or something changed */
-	if (res == 0 && (!sess->has_sdp || strcmp(buffer, sess->sdp) != 0)) {
+	if (!sess->has_sdp || ((res == 0) && strcmp(buffer, sess->sdp) != 0)) {
 		/*  send bye on the old session */
 		send_sap(impl, sess, 1);
 
-		/* update the version and hash */
-		sdp->hash = pw_rand32();
-		if ((str = pw_properties_get(props, "sess.id")) != NULL) {
-			if (!spa_atou32(str, &sdp->session_id, 10)) {
-				pw_log_error("Invalid session id: %s (must be a uint32)", str);
-				goto error_free;
-			}
-			sdp->t_ntp = pw_properties_get_uint32(props, "rtp.ntp",
-					(uint32_t) time(NULL) + 2208988800U + impl->n_sessions);
-		} else {
-			sdp->session_id = (uint32_t) time(NULL) + 2208988800U + impl->n_sessions;
-			sdp->t_ntp = pw_properties_get_uint32(props, "rtp.ntp", sdp->session_id);
-		}
-		if ((str = pw_properties_get(props, "sess.version")) != NULL) {
-			if (!spa_atou32(str, &sdp->session_version, 10)) {
-				pw_log_error("Invalid session version: %s (must be a uint32)", str);
-				goto error_free;
-			}
-		} else {
-			sdp->session_version = sdp->t_ntp;
-		}
-
 		/* make an updated SDP for sending, this should not actually fail */
-		res = make_sdp(impl, sess, sess->sdp, sizeof(sess->sdp));
-
-		if (res == 0)
-			sess->has_sdp = true;
-		else
+		res = make_sdp(impl, sess, sess->sdp, sizeof(sess->sdp), true);
+		if (res != 0)
 			pw_log_error("Failed to create SDP: %s", spa_strerror(res));
+		else
+			sess->has_sdp = true;
 	}
 
 	send_sap(impl, sess, 0);
@@ -1373,7 +1549,7 @@ static int parse_sdp_i(struct impl *impl, char *c, struct sdp_info *info)
 	c[strcspn(c, " ")] = '\0';
 
 	uint32_t channels;
-	if (sscanf(c, "%u", &channels) != 1 || channels <= 0 || channels > SPA_AUDIO_MAX_CHANNELS)
+	if (sscanf(c, "%u", &channels) != 1 || channels <= 0 || channels > MAX_CHANNELS)
 		return 0;
 
 	c += strcspn(c, "\0");
@@ -1478,6 +1654,8 @@ static int parse_sdp(struct impl *impl, char *sdp, struct sdp_info *info)
 	int count = 0, res = 0;
 	size_t l;
 
+	spa_zero(*info);
+
 	while (*s) {
 		if ((l = strcspn(s, "\r\n")) < 2)
 			goto too_short;
@@ -1523,12 +1701,15 @@ static int parse_sdp(struct impl *impl, char *sdp, struct sdp_info *info)
 	return 0;
 too_short:
 	pw_log_warn("SDP: line starting with `%.6s...' too short", s);
+	clear_sdp_info(info);
 	return -EINVAL;
 invalid_version:
 	pw_log_warn("SDP: invalid first version line `%*s'", (int)l, s);
+	clear_sdp_info(info);
 	return -EINVAL;
 error:
 	pw_log_warn("SDP: error: %s", spa_strerror(res));
+	clear_sdp_info(info);
 	return res;
 }
 
@@ -1570,7 +1751,6 @@ static int parse_sap(struct impl *impl, void *data, size_t len)
 
 	pw_log_debug("got SAP: %s %s", mime, sdp);
 
-	spa_zero(info);
 	if ((res = parse_sdp(impl, sdp, &info)) < 0)
 		return res;
 
@@ -1610,30 +1790,70 @@ on_sap_io(void *data, int fd, uint32_t mask)
 		buffer[len] = 0;
 		if ((res = parse_sap(impl, buffer, len)) < 0)
 			pw_log_warn("error parsing SAP: %s", spa_strerror(res));
+
+		rearm_igmp_recovery_timer(impl);
 	}
 }
 
 static int start_sap(struct impl *impl)
 {
-	int fd = -1, res;
-	struct timespec value, interval;
+	int fd = -1, res = 0;
 	char addr[128] = "invalid";
 
-	pw_log_info("starting SAP timer");
-	impl->timer = pw_loop_add_timer(impl->loop, on_timer_event, impl);
-	if (impl->timer == NULL) {
-		res = -errno;
-		pw_log_error("can't create timer source: %m");
+	pw_log_info("starting SAP send timer");
+	/* start_sap() might be called more than once. See the make_recv_socket()
+	 * call below for why that can happen. In such a case, the timer was
+	 * started already. The easiest way of handling it is to just cancel it.
+	 * Such cases are not expected to occur often, so canceling and then
+	 * adding the timer again is acceptable. */
+	pw_timer_queue_cancel(&impl->sap_send_timer);
+	if ((res = pw_timer_queue_add(impl->timer_queue, &impl->sap_send_timer,
+			NULL, SAP_INTERVAL_SEC * SPA_NSEC_PER_SEC,
+			on_sap_send_timer_event, impl)) < 0) {
+		pw_log_error("can't add SAP send timer: %s", spa_strerror(res));
 		goto error;
 	}
-	value.tv_sec = 0;
-	value.tv_nsec = 1;
-	interval.tv_sec = SAP_INTERVAL_SEC;
-	interval.tv_nsec = 0;
-	pw_loop_update_timer(impl->loop, impl->timer, &value, &interval, false);
+	if ((fd = make_recv_socket(&impl->sap_addr, impl->sap_len, impl->ifname,
+					&(impl->igmp_recovery))) < 0) {
+		/* If make_recv_socket() tries to create a socket and join to a multicast
+		 * group while the network interfaces are not ready yet to do so
+		 * (usually because a network manager component is still setting up
+		 * those network interfaces), ENODEV will be returned. This is essentially
+		 * a race condition. There is no discernible way to be notified when the
+		 * network interfaces are ready for that operation, so the next best
+		 * approach is to essentially do a form of polling by retrying the
+		 * start_sap() call after some time. The start_sap_retry_timer exists
+		 * precisely for that purpose. This means that ENODEV is not treated as
+		 * an error, but instead, it triggers the creation of that timer. */
+		if (fd == -ENODEV) {
+			pw_log_warn("failed to create receiver socket because network device "
+				"is not ready and present yet; will try again");
 
-	if ((fd = make_recv_socket(&impl->sap_addr, impl->sap_len, impl->ifname)) < 0)
-		return fd;
+			pw_timer_queue_cancel(&impl->start_sap_retry_timer);
+			/* Use a 1-second retry interval. The network interfaces
+			 * are likely to be up and running then. */
+			pw_timer_queue_add(impl->timer_queue, &impl->start_sap_retry_timer,
+					NULL, 1 * SPA_NSEC_PER_SEC,
+					on_start_sap_retry_timer_event, impl);
+
+			/* It is important to return 0 in this case. Otherwise, the nonzero return
+			 * value will later be propagated through the core as an error. */
+			res = 0;
+			goto finish;
+		} else {
+			pw_log_error("failed to create socket: %s", spa_strerror(-fd));
+			/* If ENODEV was returned earlier, and the start_sap_retry_timer
+			 * was consequently created, but then a non-ENODEV error occurred,
+			 * the timer must be stopped and removed. */
+			pw_timer_queue_cancel(&impl->start_sap_retry_timer);
+			res = fd;
+			goto error;
+		}
+	}
+
+	/* Cleanup the timer in case ENODEV occurred earlier, and this time,
+	 * the socket creation succeeded. */
+	pw_timer_queue_cancel(&impl->start_sap_retry_timer);
 
 	pw_net_get_ip(&impl->sap_addr, addr, sizeof(addr), NULL, NULL);
 	pw_log_info("starting SAP listener on %s", addr);
@@ -1644,11 +1864,15 @@ static int start_sap(struct impl *impl)
 		goto error;
 	}
 
-	return 0;
+	rearm_igmp_recovery_timer(impl);
+
+finish:
+	return res;
+
 error:
 	if (fd > 0)
 		close(fd);
-	return res;
+	goto finish;
 }
 
 static void node_event_info(void *data, const struct pw_node_info *info)
@@ -1778,8 +2002,9 @@ static void impl_destroy(struct impl *impl)
 	if (impl->core && impl->do_disconnect)
 		pw_core_disconnect(impl->core);
 
-	if (impl->timer)
-		pw_loop_destroy_source(impl->loop, impl->timer);
+	pw_timer_queue_cancel(&impl->sap_send_timer);
+	pw_timer_queue_cancel(&impl->start_sap_retry_timer);
+	pw_timer_queue_cancel(&impl->igmp_recovery.timer);
 	if (impl->sap_source)
 		pw_loop_destroy_source(impl->loop, impl->sap_source);
 
@@ -1793,7 +2018,7 @@ static void impl_destroy(struct impl *impl)
 	free(impl->extra_attrs_preamble);
 	free(impl->extra_attrs_end);
 
-	free(impl->ptp_mgmt_socket);
+	free(impl->ptp_mgmt_socket_path);
 	free(impl->ifname);
 	free(impl);
 }
@@ -1843,7 +2068,11 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 		return -errno;
 
 	impl->sap_fd = -1;
+	impl->ptp_fd = -1;
 	spa_list_init(&impl->sessions);
+
+	impl->igmp_recovery.socket_fd = -1;
+	impl->igmp_recovery.if_index = -1;
 
 	if (args == NULL)
 		args = "";
@@ -1858,16 +2087,17 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 
 	impl->module = module;
 	impl->loop = pw_context_get_main_loop(context);
+	impl->timer_queue = pw_context_get_timer_queue(context);
 
 	str = pw_properties_get(props, "local.ifname");
 	impl->ifname = str ? strdup(str) : NULL;
 
 	str = pw_properties_get(props, "ptp.management-socket");
-	impl->ptp_mgmt_socket = str ? strdup(str) : NULL;
+	impl->ptp_mgmt_socket_path = str ? strdup(str) : NULL;
 
 	// TODO: support UDP management access as well
-	if (impl->ptp_mgmt_socket)
-		impl->ptp_fd = make_unix_socket(impl->ptp_mgmt_socket);
+	if (impl->ptp_mgmt_socket_path)
+		impl->ptp_fd = make_unix_ptp_mgmt_socket(impl->ptp_mgmt_socket_path);
 
 	if ((str = pw_properties_get(props, "sap.ip")) == NULL)
 		str = DEFAULT_SAP_IP;
@@ -1878,6 +2108,11 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	}
 	impl->cleanup_interval = pw_properties_get_uint32(impl->props,
 			"sap.cleanup.sec", DEFAULT_CLEANUP_SEC);
+
+	/* We will use half of the cleanup interval for IGMP deadline, minimum 1 second */
+	impl->igmp_recovery.deadline = SPA_MAX(impl->cleanup_interval / 2, 1u);
+	pw_log_info("using IGMP deadline of %" PRIu32 " second(s)",
+			impl->igmp_recovery.deadline);
 
 	impl->ttl = pw_properties_get_uint32(props, "net.ttl", DEFAULT_TTL);
 	impl->mcast_loop = pw_properties_get_bool(props, "net.loop", DEFAULT_LOOP);

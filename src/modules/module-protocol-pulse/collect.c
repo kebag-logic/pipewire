@@ -169,7 +169,7 @@ uint32_t collect_profile_info(struct pw_manager_object *card, struct card_info *
 				SPA_PARAM_PROFILE_description,  SPA_POD_OPT_String(&pi->description),
 				SPA_PARAM_PROFILE_priority,  SPA_POD_OPT_Int(&pi->priority),
 				SPA_PARAM_PROFILE_available,  SPA_POD_OPT_Id(&pi->available),
-				SPA_PARAM_PROFILE_classes,  SPA_POD_OPT_Pod(&classes)) < 0) {
+				SPA_PARAM_PROFILE_classes,  SPA_POD_OPT_PodStruct(&classes)) < 0) {
 			continue;
 		}
 		if (pi->description == NULL)
@@ -233,6 +233,7 @@ static void collect_device_info(struct pw_manager_object *device, struct pw_mana
 			 struct device_info *dev_info, bool monitor, struct defs *defs)
 {
 	struct pw_manager_param *p;
+	dev_info->active_port_name = NULL;
 
 	if (card) {
 		spa_list_for_each(p, &card->param_list, link) {
@@ -246,7 +247,7 @@ static void collect_device_info(struct pw_manager_object *device, struct pw_mana
 					SPA_TYPE_OBJECT_ParamRoute, NULL,
 					SPA_PARAM_ROUTE_index, SPA_POD_Int(&index),
 					SPA_PARAM_ROUTE_device,  SPA_POD_Int(&dev),
-					SPA_PARAM_ROUTE_props,  SPA_POD_OPT_Pod(&props)) < 0)
+					SPA_PARAM_ROUTE_props,  SPA_POD_OPT_PodObject(&props)) < 0)
 				continue;
 			if (dev != dev_info->device)
 				continue;
@@ -254,6 +255,30 @@ static void collect_device_info(struct pw_manager_object *device, struct pw_mana
 			if (props && !monitor) {
 				volume_parse_param(props, &dev_info->volume_info, monitor);
 				dev_info->have_volume = true;
+			}
+		}
+
+		/* Look up the port name for the active port */
+		if (dev_info->active_port != SPA_ID_INVALID) {
+			spa_list_for_each(p, &card->param_list, link) {
+				uint32_t index, direction;
+				const char *name = NULL;
+
+				if (p->id != SPA_PARAM_EnumRoute)
+					continue;
+
+				if (spa_pod_parse_object(p->param,
+						SPA_TYPE_OBJECT_ParamRoute, NULL,
+						SPA_PARAM_ROUTE_index, SPA_POD_Int(&index),
+						SPA_PARAM_ROUTE_direction, SPA_POD_Id(&direction),
+						SPA_PARAM_ROUTE_name, SPA_POD_String(&name)) < 0)
+					continue;
+
+				if (index == dev_info->active_port &&
+				    direction == dev_info->direction) {
+					dev_info->active_port_name = name;
+					break;
+				}
 			}
 		}
 	}
@@ -369,7 +394,9 @@ uint32_t collect_port_info(struct pw_manager_object *card, struct card_info *car
 
 	n = 0;
 	spa_list_for_each(p, &card->param_list, link) {
-		struct spa_pod *devices = NULL, *profiles = NULL;
+		int32_t *devices = NULL, *profiles = NULL;
+		uint32_t devices_size = 0, devices_type = 0, n_devices = 0;
+		uint32_t profiles_size = 0, profiles_type = 0, n_profiles = 0;
 		struct port_info *pi;
 
 		if (p->id != SPA_PARAM_EnumRoute)
@@ -387,16 +414,24 @@ uint32_t collect_port_info(struct pw_manager_object *card, struct card_info *car
 				SPA_PARAM_ROUTE_priority,  SPA_POD_OPT_Int(&pi->priority),
 				SPA_PARAM_ROUTE_available,  SPA_POD_OPT_Id(&pi->available),
 				SPA_PARAM_ROUTE_info,  SPA_POD_OPT_Pod(&pi->info),
-				SPA_PARAM_ROUTE_devices,  SPA_POD_OPT_Pod(&devices),
-				SPA_PARAM_ROUTE_profiles,  SPA_POD_OPT_Pod(&profiles)) < 0)
+				SPA_PARAM_ROUTE_devices, SPA_POD_OPT_Array(&devices_size,
+					&devices_type, &n_devices, &devices),
+				SPA_PARAM_ROUTE_profiles, SPA_POD_OPT_Array(&profiles_size,
+					&profiles_type, &n_profiles, &profiles)) < 0)
 			continue;
 
 		if (pi->description == NULL)
 			pi->description = pi->name;
-		if (devices)
-			pi->devices = spa_pod_get_array(devices, &pi->n_devices);
-		if (profiles)
-			pi->profiles = spa_pod_get_array(profiles, &pi->n_profiles);
+		if (devices && devices_size == sizeof(pi->devices[0]) &&
+		    devices_type == SPA_TYPE_Int) {
+			pi->devices = (uint32_t*)devices;
+			pi->n_devices = n_devices;
+		}
+		if (profiles && profiles_size == sizeof(pi->profiles[0]) &&
+		    profiles_type == SPA_TYPE_Int) {
+			pi->profiles = (uint32_t*)profiles;
+			pi->n_profiles = n_profiles;
+		}
 
 		if (dev_info != NULL) {
 			if (pi->direction != dev_info->direction)
@@ -524,8 +559,11 @@ uint32_t collect_transport_codec_info(struct pw_manager_object *card,
 		if (iid != SPA_PROP_bluetoothAudioCodec)
 			continue;
 
-		if (SPA_POD_CHOICE_TYPE(type) != SPA_CHOICE_Enum ||
-				SPA_POD_TYPE(SPA_POD_CHOICE_CHILD(type)) != SPA_TYPE_Int)
+		if (type->pod.size < sizeof(struct spa_pod_choice_body) +
+		                     2 * sizeof(int32_t) ||
+		    type->body.type != SPA_CHOICE_Enum ||
+		    type->body.child.type != SPA_TYPE_Int ||
+		    type->body.child.size != sizeof(int32_t))
 			continue;
 
 		/*

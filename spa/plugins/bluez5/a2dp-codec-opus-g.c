@@ -74,7 +74,8 @@ static int codec_fill_caps(const struct media_codec *codec, uint32_t flags,
 static int codec_select_config(const struct media_codec *codec, uint32_t flags,
 		const void *caps, size_t caps_size,
 		const struct media_codec_audio_info *info,
-		const struct spa_dict *global_settings, uint8_t config[A2DP_MAX_CAPS_SIZE])
+		const struct spa_dict *global_settings, uint8_t config[A2DP_MAX_CAPS_SIZE],
+		void **config_data)
 {
 	a2dp_opus_g_t conf;
 	int frequency, duration, channels;
@@ -126,8 +127,8 @@ static int codec_caps_preference_cmp(const struct media_codec *codec, uint32_t f
 	int a, b;
 
 	/* Order selected configurations by preference */
-	res1 = codec->select_config(codec, flags, caps1, caps1_size, info, global_settings, (uint8_t *)&conf1);
-	res2 = codec->select_config(codec, flags, caps2, caps2_size, info, global_settings, (uint8_t *)&conf2);
+	res1 = codec->select_config(codec, flags, caps1, caps1_size, info, global_settings, (uint8_t *)&conf1, NULL);
+	res2 = codec->select_config(codec, flags, caps2, caps2_size, info, global_settings, (uint8_t *)&conf2, NULL);
 
 #define PREFER_EXPR(expr)			\
 		do {				\
@@ -164,7 +165,7 @@ static int codec_enum_config(const struct media_codec *codec, uint32_t flags,
 {
 	a2dp_opus_g_t conf;
 	struct spa_pod_frame f[1];
-	uint32_t position[SPA_AUDIO_MAX_CHANNELS];
+	uint32_t position[2];
 	int channels;
 
 	if (caps_size < sizeof(conf))
@@ -444,7 +445,8 @@ static int codec_start_decode (void *data,
 	const struct rtp_payload *payload = SPA_PTROFF(src, sizeof(struct rtp_header), void);
 	size_t header_size = sizeof(struct rtp_header) + sizeof(struct rtp_payload);
 
-	spa_return_val_if_fail (src_size > header_size, -EINVAL);
+	if (src_size <= header_size)
+		return -EINVAL;
 
 	if (seqnum)
 		*seqnum = ntohs(header->sequence_number);
@@ -512,6 +514,7 @@ static void codec_set_log(struct spa_log *global_log)
 
 const struct media_codec a2dp_codec_opus_g = {
 	.id = SPA_BLUETOOTH_AUDIO_CODEC_OPUS_G,
+	.kind = MEDIA_CODEC_A2DP,
 	.codec_id = A2DP_CODEC_VENDOR,
 	.vendor = { .vendor_id = OPUS_G_VENDOR_ID,
 			.codec_id = OPUS_G_CODEC_ID },

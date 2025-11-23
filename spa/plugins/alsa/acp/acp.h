@@ -5,17 +5,17 @@
 #ifndef ACP_H
 #define ACP_H
 
-#ifdef __cplusplus
-extern "C" {
-#else
-#include <stdbool.h>
-#endif
-
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <poll.h>
 #include <string.h>
+
+#ifdef __cplusplus
+extern "C" {
+#else
+#include <stdbool.h>
+#endif
 
 #ifdef __GNUC__
 #define ACP_PRINTF_FUNC(fmt, arg1) __attribute__((format(printf, fmt, arg1)))
@@ -150,6 +150,18 @@ const char *acp_available_str(enum acp_available status);
 #define ACP_KEY_IEC958_CODECS_DETECTED "iec958.codecs.detected"
 		/**< A list of IEC958 passthrough formats which have been auto-detected as being
 		 * supported by a given node. This only serves as a hint, as the auto-detected
+		 * values may be incorrect and/or might change, e.g. when external devices such
+		 * as receivers are powered on or off.
+		 */
+#define ACP_KEY_AUDIO_CHANNELS_DETECTED "audio.channels.detected"
+		/**< The number of channels detected detected via EDID-like data read from a device
+		 * connected via HDMI/DisplayPort. This only serves as a hint, as the auto-detected
+		 * values may be incorrect and/or might change, e.g. when external devices such
+		 * as receivers are powered on or off.
+		 */
+#define ACP_KEY_AUDIO_POSITION_DETECTED "audio.position.detected"
+		/**< The channel positions detected detected via EDID-like data read from a device
+		 * connected via HDMI/DisplayPort. This only serves as a hint, as the auto-detected
 		 * values may be incorrect and/or might change, e.g. when external devices such
 		 * as receivers are powered on or off.
 		 */

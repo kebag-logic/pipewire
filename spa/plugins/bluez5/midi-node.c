@@ -766,49 +766,57 @@ static int flush_packet(struct impl *this)
 static int write_data(struct impl *this, struct spa_data *d)
 {
 	struct port *port = &this->ports[PORT_IN];
-	struct spa_pod_sequence *pod;
-	struct spa_pod_control *c;
+	struct spa_pod_parser parser;
+	struct spa_pod_frame frame;
+	struct spa_pod_sequence seq;
+	const void *seq_body, *c_body;
+	struct spa_pod_control c;
 	uint64_t time;
 	int res;
 
-	pod = spa_pod_from_data(d->data, d->maxsize, d->chunk->offset, d->chunk->size);
-	if (pod == NULL) {
+	spa_pod_parser_init_from_data(&parser, d->data, d->maxsize, d->chunk->offset, d->chunk->size);
+	if (spa_pod_parser_push_sequence_body(&parser, &frame, &seq, &seq_body) < 0) {
 		spa_log_warn(this->log, "%p: invalid sequence in buffer max:%u offset:%u size:%u",
 				this, d->maxsize, d->chunk->offset, d->chunk->size);
 		return -EINVAL;
 	}
 
+
 	spa_bt_midi_writer_init(&this->writer, port->mtu);
 	time = 0;
 
-	SPA_POD_SEQUENCE_FOREACH(pod, c) {
+	while (spa_pod_parser_get_control_body(&parser, &c, &c_body) >= 0) {
 		int size;
 		uint8_t event[32];
+		const uint32_t *ump = c_body;
+		size_t ump_size = c.value.size;
+		uint64_t state = 0;
 
-		if (c->type != SPA_CONTROL_UMP)
+		if (c.type != SPA_CONTROL_UMP)
 			continue;
 
-		time = SPA_MAX(time, this->current_time + c->offset * SPA_NSEC_PER_SEC / this->rate);
+		time = SPA_MAX(time, this->current_time + c.offset * SPA_NSEC_PER_SEC / this->rate);
 
-		size = spa_ump_to_midi(SPA_POD_BODY(&c->value),
-				SPA_POD_BODY_SIZE(&c->value), event, sizeof(event));
-		if (size <= 0)
-			continue;
+		while (ump_size > 0) {
+			size = spa_ump_to_midi(&ump, &ump_size, event, sizeof(event), &state);
+			if (size <= 0)
+				break;
 
-		spa_log_trace(this->log, "%p: output event:0x%x time:%"PRIu64, this,
-				(size > 0) ? event[0] : 0, time);
+			spa_log_trace(this->log, "%p: output event:0x%x time:%"PRIu64, this,
+					(size > 0) ? event[0] : 0, time);
 
-		do {
-			res = spa_bt_midi_writer_write(&this->writer,
-					time, event, size);
-			if (res < 0) {
-				return res;
-			} else if (res) {
-				int res2;
-				if ((res2 = flush_packet(this)) < 0)
-					return res2;
-			}
-		} while (res);
+			do {
+				res = spa_bt_midi_writer_write(&this->writer,
+						time, event, size);
+				if (res < 0) {
+					return res;
+				} else if (res) {
+					int res2;
+					if ((res2 = flush_packet(this)) < 0)
+						return res2;
+				}
+			} while (res);
+		}
 	}
 
 	if ((res = flush_packet(this)) < 0)
@@ -1135,7 +1143,7 @@ static int do_stop(struct impl *this)
 
 	spa_log_debug(this->log, "%p: stop", this);
 
-	spa_loop_invoke(this->data_loop, do_remove_source, 0, NULL, 0, true, this);
+	spa_loop_locked(this->data_loop, do_remove_source, 0, NULL, 0, this);
 
 	this->started = false;
 
@@ -1149,7 +1157,7 @@ static int do_release(struct impl *this)
 
 	spa_log_debug(this->log, "%p: release", this);
 
-	spa_loop_invoke(this->data_loop, do_remove_port_source, 0, NULL, 0, true, this);
+	spa_loop_locked(this->data_loop, do_remove_port_source, 0, NULL, 0, this);
 
 	for (i = 0; i < N_PORTS; ++i) {
 		struct port *port = &this->ports[i];
@@ -1260,7 +1268,7 @@ static int impl_node_set_io(void *object, uint32_t id, void *data, size_t size)
 	if (this->started && following != this->following) {
 		spa_log_debug(this->log, "%p: reassign follower %d->%d", this, this->following, following);
 		this->following = following;
-		spa_loop_invoke(this->data_loop, do_reassign_follower, 0, NULL, 0, true, this);
+		spa_loop_locked(this->data_loop, do_reassign_follower, 0, NULL, 0, this);
 	}
 
 	return 0;
@@ -1567,8 +1575,7 @@ next:
 		param = spa_pod_builder_add_object(&b,
 				SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
 				SPA_FORMAT_mediaType,	   SPA_POD_Id(SPA_MEDIA_TYPE_application),
-				SPA_FORMAT_mediaSubtype,   SPA_POD_Id(SPA_MEDIA_SUBTYPE_control),
-				SPA_FORMAT_CONTROL_types,  SPA_POD_CHOICE_FLAGS_Int(1u<<SPA_CONTROL_UMP));
+				SPA_FORMAT_mediaSubtype,   SPA_POD_Id(SPA_MEDIA_SUBTYPE_control));
 		break;
 
 	case SPA_PARAM_Format:
@@ -1580,8 +1587,7 @@ next:
 		param = spa_pod_builder_add_object(&b,
 				SPA_TYPE_OBJECT_Format, SPA_PARAM_Format,
 				SPA_FORMAT_mediaType,	   SPA_POD_Id(SPA_MEDIA_TYPE_application),
-				SPA_FORMAT_mediaSubtype,   SPA_POD_Id(SPA_MEDIA_SUBTYPE_control),
-				SPA_FORMAT_CONTROL_types,  SPA_POD_Int(1u<<SPA_CONTROL_UMP));
+				SPA_FORMAT_mediaSubtype,   SPA_POD_Id(SPA_MEDIA_SUBTYPE_control));
 		break;
 
 	case SPA_PARAM_Buffers:
@@ -2024,13 +2030,13 @@ impl_init(const struct spa_handle_factory *factory,
 	for (i = 0; i < N_PORTS; ++i) {
 		struct port *port = &this->ports[i];
 		static const struct spa_dict_item in_port_items[] = {
-			SPA_DICT_ITEM_INIT(SPA_KEY_FORMAT_DSP, "32 bit raw UMP"),
+			SPA_DICT_ITEM_INIT(SPA_KEY_FORMAT_DSP, "8 bit raw midi"),
 			SPA_DICT_ITEM_INIT(SPA_KEY_PORT_NAME, "in"),
 			SPA_DICT_ITEM_INIT(SPA_KEY_PORT_ALIAS, "in"),
 			SPA_DICT_ITEM_INIT(SPA_KEY_PORT_GROUP, "group.0"),
 		};
 		static const struct spa_dict_item out_port_items[] = {
-			SPA_DICT_ITEM_INIT(SPA_KEY_FORMAT_DSP, "32 bit raw UMP"),
+			SPA_DICT_ITEM_INIT(SPA_KEY_FORMAT_DSP, "8 bit raw midi"),
 			SPA_DICT_ITEM_INIT(SPA_KEY_PORT_NAME, "out"),
 			SPA_DICT_ITEM_INIT(SPA_KEY_PORT_ALIAS, "out"),
 			SPA_DICT_ITEM_INIT(SPA_KEY_PORT_GROUP, "group.0"),

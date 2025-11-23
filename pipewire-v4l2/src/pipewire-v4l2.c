@@ -772,6 +772,19 @@ static int v4l2_dup(int oldfd)
 	return do_dup(oldfd, FD_MAP_DUP);
 }
 
+/* Deferred PipeWire init (called on first device access) */
+static void pipewire_init_func(void)
+{
+	pw_init(NULL, NULL);
+	PW_LOG_TOPIC_INIT(v4l2_log_topic);
+}
+
+static void ensure_pipewire_init(void)
+{
+	static pthread_once_t pipewire_once = PTHREAD_ONCE_INIT;
+	pthread_once(&pipewire_once, pipewire_init_func);
+}
+
 static int v4l2_openat(int dirfd, const char *path, int oflag, mode_t mode)
 {
 	int res, flags;
@@ -794,6 +807,8 @@ static int v4l2_openat(int dirfd, const char *path, int oflag, mode_t mode)
 
 	if (passthrough)
 		return globals.old_fops.openat(dirfd, path, oflag, mode);
+
+	ensure_pipewire_init();
 
 	pw_log_info("path:%s oflag:%d mode:%d", path, oflag, mode);
 
@@ -1385,7 +1400,6 @@ static int vidioc_enum_framesizes(struct file *file, struct v4l2_frmsizeenum *ar
 	spa_list_for_each(p, &g->param_list, link) {
 		const struct format_info *fi;
 		uint32_t media_type, media_subtype, format;
-		struct spa_rectangle size;
 
 		if (p->id != SPA_PARAM_EnumFormat || p->param == NULL)
 			continue;
@@ -1409,22 +1423,96 @@ static int vidioc_enum_framesizes(struct file *file, struct v4l2_frmsizeenum *ar
 
 		if (fi->fourcc != arg->pixel_format)
 			continue;
-		if (spa_pod_parse_object(p->param,
-				SPA_TYPE_OBJECT_Format, NULL,
-				SPA_FORMAT_VIDEO_size, SPA_POD_Rectangle(&size)) < 0)
+
+		const struct spa_pod_prop *size_prop = spa_pod_find_prop(p->param, NULL, SPA_FORMAT_VIDEO_size);
+		if (!size_prop)
 			continue;
 
-		arg->type = V4L2_FRMSIZE_TYPE_DISCRETE;
-		arg->discrete.width = size.width;
-		arg->discrete.height = size.height;
+		uint32_t n_sizes, choice;
+		const struct spa_pod *size_pods = spa_pod_get_values(&size_prop->value, &n_sizes, &choice);
+		if (!size_pods || n_sizes <= 0)
+			continue;
 
-		pw_log_debug("count:%d %.4s %dx%d", count, (char*)&fi->fourcc,
-				size.width, size.height);
-		if (count == arg->index) {
-			found = true;
+		const struct spa_rectangle *sizes = SPA_POD_BODY_CONST(size_pods);
+		if (size_pods->type != SPA_TYPE_Rectangle || size_pods->size != sizeof(*sizes))
+			continue;
+
+		switch (choice) {
+		case SPA_CHOICE_Enum:
+			n_sizes -= 1;
+			sizes += 1;
+			SPA_FALLTHROUGH;
+		case SPA_CHOICE_None:
+			arg->type = V4L2_FRMSIZE_TYPE_DISCRETE;
+
+			for (size_t i = 0; i < n_sizes; i++, count++) {
+				arg->discrete.width = sizes[i].width;
+				arg->discrete.height = sizes[i].height;
+
+				pw_log_debug("count:%u %.4s %ux%u", count, (char*)&fi->fourcc,
+						arg->discrete.width, arg->discrete.height);
+
+				if (count == arg->index) {
+					found = true;
+					break;
+				}
+			}
+
 			break;
+		case SPA_CHOICE_Range:
+			if (n_sizes < 3)
+				continue;
+
+			arg->type = V4L2_FRMSIZE_TYPE_CONTINUOUS;
+			arg->stepwise.min_width = sizes[1].width;
+			arg->stepwise.min_height = sizes[1].height;
+			arg->stepwise.max_width = sizes[2].width;
+			arg->stepwise.max_height = sizes[2].height;
+			arg->stepwise.step_width = arg->stepwise.step_height = 1;
+
+			pw_log_debug("count:%u %.4s (%ux%u)-(%ux%u)", count, (char*)&fi->fourcc,
+					arg->stepwise.min_width, arg->stepwise.min_height,
+					arg->stepwise.max_width, arg->stepwise.max_height);
+
+			if (count == arg->index) {
+				found = true;
+				break;
+			}
+
+			count++;
+
+			break;
+		case SPA_CHOICE_Step:
+			if (n_sizes < 4)
+				continue;
+
+			arg->type = V4L2_FRMSIZE_TYPE_CONTINUOUS;
+			arg->stepwise.min_width = sizes[1].width;
+			arg->stepwise.min_height = sizes[1].height;
+			arg->stepwise.max_width = sizes[2].width;
+			arg->stepwise.max_height = sizes[2].height;
+			arg->stepwise.step_width = sizes[3].width;
+			arg->stepwise.step_height = sizes[3].height;
+
+			pw_log_debug("count:%u %.4s (%ux%u)-(%ux%u)/(+%u,%u)", count, (char*)&fi->fourcc,
+					arg->stepwise.min_width, arg->stepwise.min_height,
+					arg->stepwise.min_width, arg->stepwise.min_height,
+					arg->stepwise.step_width, arg->stepwise.step_height);
+
+			if (count == arg->index) {
+				found = true;
+				break;
+			}
+
+			count++;
+
+			break;
+		default:
+			continue;
 		}
-		count++;
+
+		if (found)
+			break;
 	}
 	pw_thread_loop_unlock(file->loop);
 
@@ -2100,7 +2188,7 @@ static struct {
 	{ V4L2_CID_SATURATION, SPA_PROP_saturation },
 	{ V4L2_CID_HUE, SPA_PROP_hue },
 	{ V4L2_CID_GAMMA, SPA_PROP_gamma },
-	{ V4L2_CID_EXPOSURE, SPA_PROP_exposure },
+	{ V4L2_CID_EXPOSURE_ABSOLUTE, SPA_PROP_exposure },
 	{ V4L2_CID_GAIN, SPA_PROP_gain },
 	{ V4L2_CID_SHARPNESS, SPA_PROP_sharpness },
 };
@@ -2311,6 +2399,8 @@ static int vidioc_s_ctrl(struct file *file, struct v4l2_control *arg)
 			struct spa_pod_frame f[1];
 			struct spa_pod *param;
 			pod = spa_pod_get_values(type, &n_vals, &choice);
+			if (n_vals < 1)
+				break;
 
 			spa_pod_builder_push_object(&b, &f[0],
 					SPA_TYPE_OBJECT_Props,  SPA_PARAM_Props);
@@ -2563,10 +2653,14 @@ static void initialize(void)
 	globals.old_fops.ioctl = dlsym(RTLD_NEXT, "ioctl");
 	globals.old_fops.mmap = dlsym(RTLD_NEXT, "mmap64");
 	globals.old_fops.munmap = dlsym(RTLD_NEXT, "munmap");
-
-	pw_init(NULL, NULL);
-	PW_LOG_TOPIC_INIT(v4l2_log_topic);
-
+	/* NOTE:
+	 * We avoid calling pw_init() here (constructor/early init path) because
+	 * that can deadlock in certain host processes (e.g. Zoom >= 5.0) when
+	 * the preload causes PipeWire initialisation to run too early.
+	 *
+	 * PipeWire initialisation (pw_init + PW_LOG_TOPIC_INIT) is deferred
+	 * to ensure it runs on-demand in the first actual V4L2 open call.
+	 */
 	pthread_mutex_init(&globals.lock, NULL);
 	pw_array_init(&globals.file_maps, 1024);
 	pw_array_init(&globals.fd_maps, 256);

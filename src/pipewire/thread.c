@@ -92,8 +92,10 @@ static struct spa_thread *impl_create(void *object,
 	pthread_t pt;
 	pthread_attr_t *attr = NULL, attributes;
 	const char *str;
-	int err;
+	int err, old_policy, new_policy;
 	int (*create_func)(pthread_t *, const pthread_attr_t *attr, void *(*start)(void*), void *) = NULL;
+	struct sched_param sp;
+	bool reset_on_fork = true;
 
 	attr = pw_thread_fill_attr(props, &attributes);
 
@@ -118,23 +120,40 @@ static struct spa_thread *impl_create(void *object,
 		if ((str = spa_dict_lookup(props, SPA_KEY_THREAD_AFFINITY)) != NULL &&
 		    (err = thread_setaffinity(pt, str)) != 0)
 			pw_log_warn("pthread_setaffinity error: %s", strerror(-err));
+		if ((str = spa_dict_lookup(props, SPA_KEY_THREAD_RESET_ON_FORK)) != NULL)
+			reset_on_fork = spa_atob(str);
 	}
+
+	pthread_getschedparam(pt, &old_policy, &sp);
+	new_policy = old_policy;
+	SPA_FLAG_UPDATE(new_policy, SCHED_RESET_ON_FORK, reset_on_fork);
+	if (old_policy != new_policy)
+		pthread_setschedparam(pt, new_policy, &sp);
+
 	return (struct spa_thread*)pt;
 }
 
 static int impl_join(void *object, struct spa_thread *thread, void **retval)
 {
 	pthread_t pt = (pthread_t)thread;
-	return pthread_join(pt, retval);
+	return -pthread_join(pt, retval);
 }
 
 static int impl_get_rt_range(void *object, const struct spa_dict *props,
 		int *min, int *max)
 {
-	if (min)
+	if (min) {
 		*min = sched_get_priority_min(SCHED_OTHER);
-	if (max)
+		if (*min < 0)
+			return -errno;
+	}
+
+	if (max) {
 		*max = sched_get_priority_max(SCHED_OTHER);
+		if (*max < 0)
+			return -errno;
+	}
+
 	return 0;
 }
 static int impl_acquire_rt(void *object, struct spa_thread *thread, int priority)

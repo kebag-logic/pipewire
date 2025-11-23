@@ -15,6 +15,8 @@
 #include <spa/utils/result.h>
 #include <spa/param/video/format-utils.h>
 #include <spa/param/tag-utils.h>
+#include <spa/param/dict-utils.h>
+#include <spa/param/peer-utils.h>
 #include <spa/param/props.h>
 #include <spa/param/latency-utils.h>
 #include <spa/debug/format.h>
@@ -181,23 +183,21 @@ on_process(void *_data)
 		void *datas[4];
 		sstride = data->stride;
 		if (buf->n_datas == 1) {
-			datas[0] = sdata;
-			datas[1] = SPA_PTROFF(sdata, sstride * data->size.height, void);
-			datas[2] = SPA_PTROFF(sdata, 5 * (sstride * data->size.height) / 4, void);
+			SDL_UpdateTexture(data->texture, NULL,
+					sdata, sstride);
 		} else {
 			datas[0] = sdata;
 			datas[1] = buf->datas[1].data;
 			datas[2] = buf->datas[2].data;
+			SDL_UpdateYUVTexture(data->texture, NULL,
+					datas[0], sstride,
+					datas[1], sstride / 2,
+					datas[2], sstride / 2);
 		}
-		SDL_UpdateYUVTexture(data->texture, NULL,
-				datas[0], sstride,
-				datas[1], sstride / 2,
-				datas[2], sstride / 2);
 	}
 	else {
 		if (SDL_LockTexture(data->texture, NULL, &ddata, &dstride) < 0) {
 			fprintf(stderr, "Couldn't lock texture: %s\n", SDL_GetError());
-			goto done;
 		}
 
 		sstride = buf->datas[0].chunk->stride;
@@ -272,6 +272,34 @@ on_stream_io_changed(void *_data, uint32_t id, void *area, uint32_t size)
 	}
 }
 
+static void parse_peer_capability(struct data *data, const struct spa_pod *param)
+{
+	struct spa_peer_param_info info;
+	void *state = NULL;
+
+	fprintf(stderr, "peer capability\n");
+	while (spa_peer_param_parse(param, &info, sizeof(info), &state) == 1) {
+		struct spa_param_dict_info di;
+
+		if (spa_param_dict_parse(info.param, &di, sizeof(di)) > 0) {
+			struct spa_dict dict;
+			struct spa_dict_item *items;
+			const struct spa_dict_item *it;
+
+			if (spa_param_dict_info_parse(&di, sizeof(di), &dict, NULL) < 0)
+				return;
+
+			items = alloca(sizeof(struct spa_dict_item) * dict.n_items);
+			if (spa_param_dict_info_parse(&di, sizeof(di), &dict, items) < 0)
+				return;
+
+			spa_dict_for_each(it, &dict)
+				fprintf(stderr, "peer:%u  %s: %s\n", info.peer_id, it->key, it->value);
+
+		}
+	}
+}
+
 /* Be notified when the stream param changes. We're only looking at the
  * format changes.
  *
@@ -291,12 +319,16 @@ on_stream_param_changed(void *_data, uint32_t id, const struct spa_pod *param)
 	uint8_t params_buffer[1024];
 	struct spa_pod_builder b = SPA_POD_BUILDER_INIT(params_buffer, sizeof(params_buffer));
 	const struct spa_pod *params[5];
+	uint32_t n_params = 0;
 	Uint32 sdl_format;
 	void *d;
 	int32_t mult, size, blocks;
 
-	if (param != NULL && id == SPA_PARAM_Tag) {
-		spa_debug_pod(0, NULL, param);
+	if (param != NULL && (id == SPA_PARAM_Tag || id == SPA_PARAM_PeerCapability)) {
+		if (id == SPA_PARAM_PeerCapability)
+			parse_peer_capability(data, param);
+		else
+			spa_debug_pod(0, NULL, param);
 		return;
 	}
 	if (param != NULL && id == SPA_PARAM_Latency) {
@@ -355,21 +387,26 @@ on_stream_param_changed(void *_data, uint32_t id, const struct spa_pod *param)
 					  SDL_TEXTUREACCESS_STREAMING,
 					  data->size.width,
 					  data->size.height);
-	if (SDL_LockTexture(data->texture, NULL, &d, &data->stride) < 0) {
-		fprintf(stderr, "Couldn't lock texture: %s\n", SDL_GetError());
-		pw_stream_set_error(stream, -EINVAL, "invalid format");
-		return;
-	}
-	SDL_UnlockTexture(data->texture);
-
 	switch(sdl_format) {
 	case SDL_PIXELFORMAT_YV12:
 	case SDL_PIXELFORMAT_IYUV:
+		data->stride = data->size.width;
 		size = (data->stride * data->size.height) * 3 / 2;
 		data->is_yuv = true;
 		blocks = 3;
 		break;
+	case SDL_PIXELFORMAT_YUY2:
+		data->is_yuv = true;
+		data->stride = data->size.width * 2;
+		size = (data->stride * data->size.height);
+		blocks = 1;
+		break;
 	default:
+		if (SDL_LockTexture(data->texture, NULL, &d, &data->stride) < 0) {
+			fprintf(stderr, "Couldn't lock texture: %s\n", SDL_GetError());
+			data->stride = data->size.width * 2;
+		} else
+			SDL_UnlockTexture(data->texture);
 		size = data->stride * data->size.height;
 		blocks = 1;
 		break;
@@ -382,7 +419,7 @@ on_stream_param_changed(void *_data, uint32_t id, const struct spa_pod *param)
 
 	/* a SPA_TYPE_OBJECT_ParamBuffers object defines the acceptable size,
 	 * number, stride etc of the buffers */
-	params[0] = spa_pod_builder_add_object(&b,
+	params[n_params++] = spa_pod_builder_add_object(&b,
 		SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers,
 		SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(8, 2, MAX_BUFFERS),
 		SPA_PARAM_BUFFERS_blocks,  SPA_POD_Int(blocks),
@@ -391,19 +428,19 @@ on_stream_param_changed(void *_data, uint32_t id, const struct spa_pod *param)
 		SPA_PARAM_BUFFERS_dataType, SPA_POD_CHOICE_FLAGS_Int((1<<SPA_DATA_MemPtr)));
 
 	/* a header metadata with timing information */
-	params[1] = spa_pod_builder_add_object(&b,
+	params[n_params++] = spa_pod_builder_add_object(&b,
 		SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
 		SPA_PARAM_META_type, SPA_POD_Id(SPA_META_Header),
 		SPA_PARAM_META_size, SPA_POD_Int(sizeof(struct spa_meta_header)));
 	/* video cropping information */
-	params[2] = spa_pod_builder_add_object(&b,
+	params[n_params++] = spa_pod_builder_add_object(&b,
 		SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
 		SPA_PARAM_META_type, SPA_POD_Id(SPA_META_VideoCrop),
 		SPA_PARAM_META_size, SPA_POD_Int(sizeof(struct spa_meta_region)));
 #define CURSOR_META_SIZE(w,h)	(sizeof(struct spa_meta_cursor) + \
 				 sizeof(struct spa_meta_bitmap) + w * h * 4)
 	/* cursor information */
-	params[3] = spa_pod_builder_add_object(&b,
+	params[n_params++] = spa_pod_builder_add_object(&b,
 		SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta,
 		SPA_PARAM_META_type, SPA_POD_Id(SPA_META_Cursor),
 		SPA_PARAM_META_size, SPA_POD_CHOICE_RANGE_Int(
@@ -412,7 +449,7 @@ on_stream_param_changed(void *_data, uint32_t id, const struct spa_pod *param)
 				CURSOR_META_SIZE(256,256)));
 
 	/* we are done */
-	pw_stream_update_params(stream, params, 4);
+	pw_stream_update_params(stream, params, n_params);
 }
 
 /* these are the stream events we listen for */
@@ -426,15 +463,16 @@ static const struct pw_stream_events stream_events = {
 
 static int build_format(struct data *data, struct spa_pod_builder *b, const struct spa_pod **params)
 {
+	uint32_t n_params = 0;
 	SDL_RendererInfo info;
 
 	SDL_GetRendererInfo(data->renderer, &info);
-	params[0] = sdl_build_formats(&info, b);
+	params[n_params++] = sdl_build_formats(&info, b);
 
 	fprintf(stderr, "supported SDL formats:\n");
 	spa_debug_format(2, NULL, params[0]);
 
-	params[1] = spa_pod_builder_add_object(b,
+	params[n_params++] = spa_pod_builder_add_object(b,
 			SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
 			SPA_FORMAT_mediaType,		SPA_POD_Id(SPA_MEDIA_TYPE_video),
 			SPA_FORMAT_mediaSubtype,	SPA_POD_Id(SPA_MEDIA_SUBTYPE_dsp),
@@ -443,7 +481,7 @@ static int build_format(struct data *data, struct spa_pod_builder *b, const stru
 	fprintf(stderr, "supported DSP formats:\n");
 	spa_debug_format(2, NULL, params[1]);
 
-	return 2;
+	return n_params;
 }
 
 static void do_quit(void *userdata, int signal_number)

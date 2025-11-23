@@ -2,6 +2,8 @@
 /* SPDX-FileCopyrightText: Copyright © 2021 Wim Taymans */
 /* SPDX-License-Identifier: MIT */
 
+#include "config.h"
+
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
@@ -12,8 +14,6 @@
 #include <unistd.h>
 #include <limits.h>
 #include <math.h>
-
-#include "config.h"
 
 #include <spa/utils/result.h>
 #include <spa/utils/string.h>
@@ -39,6 +39,7 @@
 SPA_LOG_TOPIC_DEFINE_STATIC(log_topic, "spa.filter-graph");
 
 #define MAX_HNDL 64
+#define MAX_CHANNELS SPA_AUDIO_MAX_CHANNELS
 
 #define DEFAULT_RATE	48000
 
@@ -67,7 +68,7 @@ struct descriptor {
 	struct spa_list link;
 	int ref;
 	struct plugin *plugin;
-	char label[256];
+	char *label;
 
 	const struct spa_fga_descriptor *desc;
 
@@ -154,15 +155,15 @@ struct graph_hndl {
 struct volume {
 	bool mute;
 	uint32_t n_volumes;
-	float volumes[SPA_AUDIO_MAX_CHANNELS];
+	float volumes[MAX_CHANNELS];
 
 	uint32_t n_ports;
-	struct port *ports[SPA_AUDIO_MAX_CHANNELS];
-	float min[SPA_AUDIO_MAX_CHANNELS];
-	float max[SPA_AUDIO_MAX_CHANNELS];
+	struct port *ports[MAX_CHANNELS];
+	float min[MAX_CHANNELS];
+	float max[MAX_CHANNELS];
 #define SCALE_LINEAR	0
 #define SCALE_CUBIC	1
-	int scale[SPA_AUDIO_MAX_CHANNELS];
+	int scale[MAX_CHANNELS];
 };
 
 struct graph {
@@ -194,9 +195,9 @@ struct graph {
 
 	uint32_t n_inputs;
 	uint32_t n_outputs;
-	uint32_t inputs_position[SPA_AUDIO_MAX_CHANNELS];
+	uint32_t inputs_position[MAX_CHANNELS];
 	uint32_t n_inputs_position;
-	uint32_t outputs_position[SPA_AUDIO_MAX_CHANNELS];
+	uint32_t outputs_position[MAX_CHANNELS];
 	uint32_t n_outputs_position;
 
 	float min_latency;
@@ -231,16 +232,18 @@ struct impl {
 	float *discard_data;
 };
 
-static inline void print_channels(char *buffer, size_t max_size, uint32_t n_channels, uint32_t *positions)
+static inline void print_channels(char *buffer, size_t max_size, uint32_t n_positions, uint32_t *positions)
 {
 	uint32_t i;
 	struct spa_strbuf buf;
+	char pos[8];
 
 	spa_strbuf_init(&buf, buffer, max_size);
 	spa_strbuf_append(&buf, "[");
-	for (i = 0; i < n_channels; i++) {
+	for (i = 0; i < n_positions; i++) {
 		spa_strbuf_append(&buf, "%s%s", i ? "," : "",
-			spa_type_audio_channel_to_short_name(positions[i]));
+			spa_type_audio_channel_make_short_name(positions[i],
+				pos, sizeof(pos), "UNK"));
 	}
 	spa_strbuf_append(&buf, "]");
 }
@@ -256,8 +259,8 @@ static void emit_filter_graph_info(struct impl *impl, bool full)
 		char n_inputs[64], n_outputs[64], latency[64];
 		struct spa_dict_item items[6];
 		struct spa_dict dict = SPA_DICT(items, 0);
-		char in_pos[SPA_AUDIO_MAX_CHANNELS * 8];
-		char out_pos[SPA_AUDIO_MAX_CHANNELS * 8];
+		char in_pos[MAX_CHANNELS * 8];
+		char out_pos[MAX_CHANNELS * 8];
 
 		snprintf(n_inputs, sizeof(n_inputs), "%d", impl->graph.n_inputs);
 		snprintf(n_outputs, sizeof(n_outputs), "%d", impl->graph.n_outputs);
@@ -351,6 +354,15 @@ static struct node *find_node(struct graph *graph, const char *name)
 	}
 	return NULL;
 }
+#if !defined(strdupa)
+# define strdupa(s)                                                                   \
+        ({                                                                            \
+                const char *__old = (s);                                              \
+                size_t __len = strlen(__old) + 1;                                     \
+                char *__new = (char *) alloca(__len);                                 \
+                (char *) memcpy(__new, __old, __len);                                 \
+        })
+#endif
 
 /* find a port by name. Valid syntax is:
  *  "<node_name>:<port_name>"
@@ -604,11 +616,12 @@ static int parse_params(struct graph *graph, const struct spa_pod *pod)
 		return 0;
 
 	while (true) {
-		const char *name;
+		const char *name, *str_val;
 		float value, *val = NULL;
 		double dbl_val;
 		bool bool_val;
 		int32_t int_val;
+		int64_t long_val;
 
 		if (spa_pod_parser_get_string(&prs, &name) < 0)
 			break;
@@ -620,8 +633,14 @@ static int parse_params(struct graph *graph, const struct spa_pod *pod)
 		} else if (spa_pod_parser_get_int(&prs, &int_val) >= 0) {
 			value = int_val;
 			val = &value;
+		} else if (spa_pod_parser_get_long(&prs, &long_val) >= 0) {
+			value = long_val;
+			val = &value;
 		} else if (spa_pod_parser_get_bool(&prs, &bool_val) >= 0) {
 			value = bool_val ? 1.0f : 0.0f;
+			val = &value;
+		} else if (spa_pod_parser_get_string(&prs, &str_val) >= 0 &&
+			spa_json_parse_float(str_val, strlen(str_val), &value) >= 0) {
 			val = &value;
 		} else {
 			struct spa_pod *pod;
@@ -729,10 +748,10 @@ static int impl_set_props(void *object, enum spa_direction direction, const stru
 		case SPA_PROP_channelVolumes:
 		{
 			uint32_t i, n_vols;
-			float vols[SPA_AUDIO_MAX_CHANNELS];
+			float vols[MAX_CHANNELS];
 
 			if ((n_vols = spa_pod_copy_array(&prop->value, SPA_TYPE_Float, vols,
-					SPA_AUDIO_MAX_CHANNELS)) > 0) {
+					SPA_N_ELEMENTS(vols))) > 0) {
 				if (vol->n_volumes != n_vols)
 					do_volume = true;
 				vol->n_volumes = n_vols;
@@ -756,7 +775,7 @@ static int impl_set_props(void *object, enum spa_direction direction, const stru
 		}
 	}
 	if (do_volume && vol->n_ports != 0) {
-		float soft_vols[SPA_AUDIO_MAX_CHANNELS];
+		float soft_vols[MAX_CHANNELS];
 		uint32_t i;
 
 		for (i = 0; i < vol->n_volumes; i++)
@@ -902,6 +921,7 @@ static void descriptor_unref(struct descriptor *desc)
 	if (desc->desc)
 		spa_fga_descriptor_free(desc->desc);
 	plugin_unref(desc->plugin);
+	free(desc->label);
 	free(desc->input);
 	free(desc->output);
 	free(desc->control);
@@ -945,12 +965,12 @@ static struct descriptor *descriptor_load(struct impl *impl, const char *type,
 	spa_list_init(&desc->link);
 
 	if ((d = spa_fga_plugin_make_desc(pl->plugin, label)) == NULL) {
-		spa_log_error(impl->log, "cannot find label %s", label);
+		spa_log_error(impl->log, "cannot create label %s", label);
 		res = -ENOENT;
 		goto exit;
 	}
 	desc->desc = d;
-	snprintf(desc->label, sizeof(desc->label), "%s", label);
+	desc->label = strdup(label);
 
 	n_input = n_output = n_control = n_notify = 0;
 	for (p = 0; p < d->n_ports; p++) {
@@ -1026,38 +1046,36 @@ exit:
  *   ...
  * }
  */
-static int parse_config(struct node *node, struct spa_json *config)
+static char *copy_value(struct impl *impl, struct spa_json *value)
 {
-	const char *val, *s = config->cur;
-	struct impl *impl = node->graph->impl;
-	int res = 0, len;
+	const char *val, *s = value->cur;
+	int len;
 	struct spa_error_location loc;
+	char *result = NULL;
 
-	if ((len = spa_json_next(config, &val)) <= 0) {
-		res = -EINVAL;
+	if ((len = spa_json_next(value, &val)) <= 0) {
+		errno = EINVAL;
 		goto done;
 	}
 	if (spa_json_is_null(val, len))
 		goto done;
 
 	if (spa_json_is_container(val, len)) {
-		len = spa_json_container_len(config, val, len);
+		len = spa_json_container_len(value, val, len);
 		if (len == 0) {
-			res = -EINVAL;
+			errno = EINVAL;
 			goto done;
 		}
 	}
-	if ((node->config = malloc(len+1)) == NULL) {
-		res = -errno;
+	if ((result = malloc(len+1)) == NULL)
 		goto done;
-	}
 
-	spa_json_parse_stringn(val, len, node->config, len+1);
+	spa_json_parse_stringn(val, len, result, len+1);
 done:
-	if (spa_json_get_error(config, s, &loc))
+	if (spa_json_get_error(value, s, &loc))
 		spa_debug_log_error_location(impl->log, SPA_LOG_LEVEL_WARN,
 				&loc, "error: %s", loc.reason);
-	return res;
+	return result;
 }
 
 /**
@@ -1249,7 +1267,7 @@ static int parse_volume(struct graph *graph, struct spa_json *json, enum spa_dir
 		spa_log_error(impl->log, "unknown control port %s", control);
 		return -ENOENT;
 	}
-	if (vol->n_ports >= SPA_AUDIO_MAX_CHANNELS) {
+	if (vol->n_ports >= MAX_CHANNELS) {
 		spa_log_error(impl->log, "too many volume controls");
 		return -ENOSPC;
 	}
@@ -1287,7 +1305,7 @@ static int parse_volume(struct graph *graph, struct spa_json *json, enum spa_dir
 static int load_node(struct graph *graph, struct spa_json *json)
 {
 	struct impl *impl = graph->impl;
-	struct spa_json control, config;
+	struct spa_json control, it;
 	struct descriptor *desc;
 	struct node *node;
 	const char *val;
@@ -1295,11 +1313,11 @@ static int load_node(struct graph *graph, struct spa_json *json)
 	char type[256] = "";
 	char name[256] = "";
 	char plugin[256] = "";
-	char label[256] = "";
+	spa_autofree char *label = NULL;
+	spa_autofree char *config = NULL;
 	bool have_control = false;
-	bool have_config = false;
 	uint32_t i;
-	int res, len;
+	int len;
 
 	while ((len = spa_json_object_next(json, key, sizeof(key), &val)) > 0) {
 		if (spa_streq("type", key)) {
@@ -1318,8 +1336,9 @@ static int load_node(struct graph *graph, struct spa_json *json)
 				return -EINVAL;
 			}
 		} else if (spa_streq("label", key)) {
-			if (spa_json_parse_stringn(val, len, label, sizeof(label)) <= 0) {
-				spa_log_error(impl->log, "label expects a string");
+			it = SPA_JSON_START(json, val);
+			if ((label = copy_value(impl, &it)) == NULL) {
+				spa_log_warn(impl->log, "error parsing label: %s", spa_strerror(-errno));
 				return -EINVAL;
 			}
 		} else if (spa_streq("control", key)) {
@@ -1330,8 +1349,9 @@ static int load_node(struct graph *graph, struct spa_json *json)
 			spa_json_enter(json, &control);
 			have_control = true;
 		} else if (spa_streq("config", key)) {
-			config = SPA_JSON_START(json, val);
-			have_config = true;
+			it = SPA_JSON_START(json, val);
+			if ((config = copy_value(impl, &it)) == NULL)
+				spa_log_warn(impl->log, "error parsing config: %s", spa_strerror(-errno));
 		} else {
 			spa_log_warn(impl->log, "unexpected node key '%s'", key);
 		}
@@ -1345,7 +1365,7 @@ static int load_node(struct graph *graph, struct spa_json *json)
 
 	spa_log_info(impl->log, "loading type:%s plugin:%s label:%s", type, plugin, label);
 
-	if ((desc = descriptor_load(graph->impl, type, plugin, label)) == NULL)
+	if ((desc = descriptor_load(graph->impl, type, plugin, label ? label : "")) == NULL)
 		return -errno;
 
 	node = calloc(1, sizeof(*node));
@@ -1356,6 +1376,7 @@ static int load_node(struct graph *graph, struct spa_json *json)
 	node->desc = desc;
 	snprintf(node->name, sizeof(node->name), "%s", name);
 	node->latency_index = SPA_IDX_INVALID;
+	node->config = spa_steal_ptr(config);
 
 	node->input_port = calloc(desc->n_input, sizeof(struct port));
 	node->output_port = calloc(desc->n_output, sizeof(struct port));
@@ -1401,9 +1422,6 @@ static int load_node(struct graph *graph, struct spa_json *json)
 			node->latency_index = i;
 		spa_list_init(&port->link_list);
 	}
-	if (have_config)
-		if ((res = parse_config(node, &config)) < 0)
-			spa_log_warn(impl->log, "error parsing config: %s", spa_strerror(res));
 	if (have_control)
 		parse_control(node, &control);
 
@@ -1611,6 +1629,8 @@ static int impl_activate(void *object, const struct spa_dict *props)
 					if ((res = port_ensure_data(link->output, i, max_samples)) < 0)
 						goto error;
 					data = link->output->audio_data[i];
+				} else if (SPA_FGA_SUPPORTS_NULL_DATA(d->ports[port->p].flags)) {
+					data = NULL;
 				} else {
 					data = sd;
 				}
@@ -1621,9 +1641,13 @@ static int impl_activate(void *object, const struct spa_dict *props)
 			for (j = 0; j < desc->n_output; j++) {
 				port = &node->output_port[j];
 				if (port->audio_data[i] == NULL) {
+					if (SPA_FGA_SUPPORTS_NULL_DATA(d->ports[port->p].flags))
+						data = NULL;
+					else
+						data = dd;
 					spa_log_info(impl->log, "connect output port %s[%d]:%s %p",
-						node->name, i, d->ports[port->p].name, dd);
-					d->connect_port(node->hndl[i], port->p, dd);
+						node->name, i, d->ports[port->p].name, data);
+					d->connect_port(node->hndl[i], port->p, data);
 				}
 			}
 			for (j = 0; j < desc->n_control; j++) {
@@ -1689,6 +1713,9 @@ static int impl_activate(void *object, const struct spa_dict *props)
 	max_latency = 0.0f;
 	for (i = 0; i < graph->n_outputs; i++) {
 		struct graph_port *port = &graph->output[i];
+		/* ports with no descriptor are ignored */
+		if (port->desc == NULL)
+			continue;
 		max_latency = fmaxf(max_latency, port->node->max_latency);
 		min_latency = fminf(min_latency, port->node->min_latency);
 	}
@@ -1701,6 +1728,9 @@ static int impl_activate(void *object, const struct spa_dict *props)
 				"align the signals", min_latency, max_latency);
 		for (i = 0; i < graph->n_outputs; i++) {
 			struct graph_port *port = &graph->output[i];
+			/* port with no descriptor are ignored */
+			if (port->desc == NULL)
+				continue;
 			if (min_latency != port->node->min_latency ||
 			    max_latency != port->node->max_latency)
 				spa_log_warn(impl->log, "output port %d from %s min:%f max:%f",
@@ -1724,6 +1754,9 @@ error:
 
 static void unsetup_graph(struct graph *graph)
 {
+	struct node *node;
+	uint32_t i;
+
 	free(graph->input);
 	graph->input = NULL;
 	free(graph->output);
@@ -1731,7 +1764,19 @@ static void unsetup_graph(struct graph *graph)
 	free(graph->hndl);
 	graph->hndl = NULL;
 
+	spa_list_for_each(node, &graph->node_list, link) {
+		struct descriptor *desc = node->desc;
+		for (i = 0; i < desc->n_input; i++) {
+			struct port *port = &node->input_port[i];
+			port->external = SPA_ID_INVALID;
+		}
+		for (i = 0; i < desc->n_output; i++) {
+			struct port *port = &node->output_port[i];
+			port->external = SPA_ID_INVALID;
+		}
+	}
 }
+
 static int setup_graph(struct graph *graph)
 {
 	struct impl *impl = graph->impl;
@@ -2076,8 +2121,9 @@ static int load_graph(struct graph *graph, const struct spa_dict *props)
 				spa_log_error(impl->log, "%s expects an array", key);
 				return -EINVAL;
 			}
-			spa_audio_parse_position(val, len, graph->inputs_position,
-						&graph->n_inputs_position);
+			spa_audio_parse_position_n(val, len, graph->inputs_position,
+					SPA_N_ELEMENTS(graph->inputs_position),
+					&graph->n_inputs_position);
 			impl->info.n_inputs = graph->n_inputs_position;
 		}
 		else if (spa_streq("outputs.audio.position", key)) {
@@ -2086,8 +2132,9 @@ static int load_graph(struct graph *graph, const struct spa_dict *props)
 				spa_log_error(impl->log, "%s expects an array", key);
 				return -EINVAL;
 			}
-			spa_audio_parse_position(val, len, graph->outputs_position,
-						&graph->n_outputs_position);
+			spa_audio_parse_position_n(val, len, graph->outputs_position,
+					SPA_N_ELEMENTS(graph->outputs_position),
+					&graph->n_outputs_position);
 			impl->info.n_outputs = graph->n_outputs_position;
 		}
 		else if (spa_streq("nodes", key)) {

@@ -72,6 +72,7 @@
  * - \ref PW_KEY_AUDIO_RATE
  * - \ref PW_KEY_AUDIO_FORMAT
  * - \ref PW_KEY_AUDIO_CHANNELS
+ * - \ref SPA_KEY_AUDIO_LAYOUT
  * - \ref SPA_KEY_AUDIO_POSITION
  * - \ref PW_KEY_NODE_LATENCY
  * - \ref PW_KEY_NODE_RATE
@@ -665,8 +666,9 @@ static int make_tcp_socket(struct server *server, const char *name, const char *
 		const char *ifaddress)
 {
 	struct sockaddr_storage addr;
-	int res, fd, on;
+	int res, on;
 	socklen_t len = 0;
+	spa_autoclose int fd = -1;
 
 	if ((res = pw_net_parse_address_port(name, ifaddress, DEFAULT_PORT, &addr, &len)) < 0) {
 		pw_log_error("%p: can't parse address %s: %s", server,
@@ -693,26 +695,24 @@ static int make_tcp_socket(struct server *server, const char *name, const char *
 	if (bind(fd, (struct sockaddr *) &addr, len) < 0) {
 		res = -errno;
 		pw_log_error("%p: bind() failed: %m", server);
-		goto error_close;
+		goto error;
 	}
 	if (listen(fd, 5) < 0) {
 		res = -errno;
 		pw_log_error("%p: listen() failed: %m", server);
-		goto error_close;
+		goto error;
 	}
 	if (getsockname(fd, (struct sockaddr *)&addr, &len) < 0) {
 		res = -errno;
 		pw_log_error("%p: getsockname() failed: %m", server);
-		goto error_close;
+		goto error;
 	}
 
 	server->type = SERVER_TYPE_TCP;
 	server->addr = addr;
 
-	return fd;
+	return spa_steal_fd(fd);
 
-error_close:
-	close(fd);
 error:
 	return res;
 }
@@ -816,13 +816,14 @@ static int calc_frame_size(struct spa_audio_info_raw *info)
 	case SPA_AUDIO_FORMAT_F64_OE:
 		return res * 8;
 	default:
-		return 0;
+		return -ENOTSUP;
 	}
 }
 
 static int parse_audio_info(const struct pw_properties *props, struct spa_audio_info_raw *info)
 {
-	spa_audio_info_raw_init_dict_keys(info,
+	int res;
+	if ((res = spa_audio_info_raw_init_dict_keys(info,
 			&SPA_DICT_ITEMS(
 				 SPA_DICT_ITEM(SPA_KEY_AUDIO_FORMAT, DEFAULT_FORMAT),
 				 SPA_DICT_ITEM(SPA_KEY_AUDIO_RATE, SPA_STRINGIFY(DEFAULT_RATE)),
@@ -831,7 +832,9 @@ static int parse_audio_info(const struct pw_properties *props, struct spa_audio_
 			SPA_KEY_AUDIO_FORMAT,
 			SPA_KEY_AUDIO_RATE,
 			SPA_KEY_AUDIO_CHANNELS,
-			SPA_KEY_AUDIO_POSITION, NULL);
+			SPA_KEY_AUDIO_LAYOUT,
+			SPA_KEY_AUDIO_POSITION, NULL)) < 0)
+		return res;
 
 	return calc_frame_size(info);
 }
@@ -852,6 +855,7 @@ static int parse_params(struct impl *impl)
 	const char *str;
 	struct spa_json it[1];
 	char value[512];
+	int res;
 
 	pw_properties_fetch_bool(impl->props, "capture", &impl->capture);
 	pw_properties_fetch_bool(impl->props, "playback", &impl->playback);
@@ -886,6 +890,7 @@ static int parse_params(struct impl *impl)
 	copy_props(impl, PW_KEY_AUDIO_FORMAT);
 	copy_props(impl, PW_KEY_AUDIO_RATE);
 	copy_props(impl, PW_KEY_AUDIO_CHANNELS);
+	copy_props(impl, SPA_KEY_AUDIO_LAYOUT);
 	copy_props(impl, SPA_KEY_AUDIO_POSITION);
 	copy_props(impl, PW_KEY_NODE_RATE);
 	copy_props(impl, PW_KEY_NODE_NAME);
@@ -895,19 +900,20 @@ static int parse_params(struct impl *impl)
 	copy_props(impl, PW_KEY_NODE_VIRTUAL);
 	copy_props(impl, PW_KEY_NODE_NETWORK);
 
-	impl->capture_frame_size = parse_audio_info(impl->capture_props, &impl->capture_info);
-	if (impl->capture_frame_size == 0) {
+	if ((res = parse_audio_info(impl->capture_props, &impl->capture_info)) <= 0) {
 		pw_log_error("unsupported capture audio format:%d channels:%d",
 				impl->capture_info.format, impl->capture_info.channels);
 		return -EINVAL;
 	}
+	impl->capture_frame_size = res;
 
-	impl->playback_frame_size = parse_audio_info(impl->playback_props, &impl->playback_info);
-	if (impl->playback_frame_size == 0) {
+	if ((res = parse_audio_info(impl->playback_props, &impl->playback_info)) <= 0) {
 		pw_log_error("unsupported playback audio format:%d channels:%d",
 				impl->playback_info.format, impl->playback_info.channels);
 		return -EINVAL;
 	}
+	impl->playback_frame_size = res;
+
 	if (impl->capture_info.rate != 0 &&
 	    pw_properties_get(impl->capture_props, PW_KEY_NODE_RATE) == NULL)
 		pw_properties_setf(impl->capture_props, PW_KEY_NODE_RATE,

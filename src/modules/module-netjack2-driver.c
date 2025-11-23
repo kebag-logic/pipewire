@@ -2,6 +2,8 @@
 /* SPDX-FileCopyrightText: Copyright © 2021 Wim Taymans */
 /* SPDX-License-Identifier: MIT */
 
+#include "config.h"
+
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
@@ -17,8 +19,6 @@
 #include <netinet/in.h>
 #include <net/if.h>
 #include <math.h>
-
-#include "config.h"
 
 #include <spa/utils/result.h>
 #include <spa/utils/string.h>
@@ -99,6 +99,7 @@
  *
  * - \ref PW_KEY_REMOTE_NAME
  * - \ref PW_KEY_AUDIO_CHANNELS
+ * - \ref SPA_KEY_AUDIO_LAYOUT
  * - \ref SPA_KEY_AUDIO_POSITION
  * - \ref PW_KEY_NODE_NAME
  * - \ref PW_KEY_NODE_DESCRIPTION
@@ -225,6 +226,7 @@ struct impl {
 	struct pw_loop *main_loop;
 	struct pw_loop *data_loop;
 	struct spa_system *system;
+	struct pw_timer_queue *timer_queue;
 
 #define MODE_SINK	(1<<0)
 #define MODE_SOURCE	(1<<1)
@@ -263,7 +265,7 @@ struct impl {
 
 	struct spa_source *setup_socket;
 	struct spa_source *socket;
-	struct spa_source *timer;
+	struct pw_timer timer;
 	int32_t init_retry;
 
 	struct netjack2_peer peer;
@@ -440,11 +442,11 @@ static void make_stream_ports(struct stream *s)
 		}
 
 		if (i < s->info.channels) {
-			str = spa_debug_type_find_short_name(spa_type_audio_channel,
-					s->info.position[i % SPA_AUDIO_MAX_CHANNELS]);
+			str = spa_type_audio_channel_make_short_name(
+					s->info.position[i], name, sizeof(name), "UNK");
 			props = pw_properties_new(
 					PW_KEY_FORMAT_DSP, "32 bit float mono audio",
-					PW_KEY_AUDIO_CHANNEL, str ? str : "UNK",
+					PW_KEY_AUDIO_CHANNEL, str,
 					PW_KEY_PORT_PHYSICAL, "true",
 					NULL);
 
@@ -452,7 +454,7 @@ static void make_stream_ports(struct stream *s)
 		} else {
 			snprintf(name, sizeof(name), "midi%d", i - s->info.channels);
 			props = pw_properties_new(
-					PW_KEY_FORMAT_DSP, "32 bit raw UMP",
+					PW_KEY_FORMAT_DSP, "8 bit raw midi",
 					PW_KEY_AUDIO_CHANNEL, name,
 					PW_KEY_PORT_PHYSICAL, "true",
 					NULL);
@@ -511,9 +513,9 @@ static void parse_props(struct stream *s, const struct spa_pod *param)
 		case SPA_PROP_channelVolumes:
 		{
 			uint32_t n;
-			float vols[SPA_AUDIO_MAX_CHANNELS];
+			float vols[MAX_CHANNELS];
 			if ((n = spa_pod_copy_array(&prop->value, SPA_TYPE_Float,
-					vols, SPA_AUDIO_MAX_CHANNELS)) > 0) {
+					vols, SPA_N_ELEMENTS(vols))) > 0) {
 				s->volume.n_volumes = n;
 				for (n = 0; n < s->volume.n_volumes; n++)
 					s->volume.volumes[n] = vols[n];
@@ -801,14 +803,14 @@ error:
 	return res;
 }
 
+static void on_timer_event(void *data);
+
 static void update_timer(struct impl *impl, uint64_t timeout)
 {
-	struct timespec value, interval;
-	value.tv_sec = 0;
-	value.tv_nsec = timeout ? 1 : 0;
-	interval.tv_sec = timeout;
-	interval.tv_nsec = 0;
-	pw_loop_update_timer(impl->main_loop, impl->timer, &value, &interval, false);
+	pw_timer_queue_cancel(&impl->timer);
+	pw_timer_queue_add(impl->timer_queue, &impl->timer,
+			NULL, timeout * SPA_NSEC_PER_SEC,
+			on_timer_event, impl);
 }
 
 static bool encoding_supported(uint32_t encoder)
@@ -848,6 +850,10 @@ static int handle_follower_setup(struct impl *impl, struct nj2_session_params *p
 		pw_log_warn("invalid follower setup");
 		return -EINVAL;
 	}
+	/* the params are from the perspective of the manager, so send is our
+	 * receive (source) and recv is our send (sink) */
+	SPA_SWAP(peer->params.send_audio_channels, peer->params.recv_audio_channels);
+	SPA_SWAP(peer->params.send_midi_channels, peer->params.recv_midi_channels);
 
 	pw_loop_update_io(impl->main_loop, impl->setup_socket, 0);
 
@@ -858,7 +864,7 @@ static int handle_follower_setup(struct impl *impl, struct nj2_session_params *p
 	}
 	impl->sink.info.rate =  peer->params.sample_rate;
 	if ((uint32_t)peer->params.send_audio_channels != impl->sink.info.channels) {
-		impl->sink.info.channels = SPA_MIN(peer->params.send_audio_channels, (int)SPA_AUDIO_MAX_CHANNELS);
+		impl->sink.info.channels = peer->params.send_audio_channels;
 		for (i = 0; i < impl->sink.info.channels; i++)
 			impl->sink.info.position[i] = SPA_AUDIO_CHANNEL_AUX0 + i;
 	}
@@ -869,7 +875,7 @@ static int handle_follower_setup(struct impl *impl, struct nj2_session_params *p
 	}
 	impl->source.info.rate =  peer->params.sample_rate;
 	if ((uint32_t)peer->params.recv_audio_channels != impl->source.info.channels) {
-		impl->source.info.channels = SPA_MIN(peer->params.recv_audio_channels, (int)SPA_AUDIO_MAX_CHANNELS);
+		impl->source.info.channels = peer->params.recv_audio_channels;
 		for (i = 0; i < impl->source.info.channels; i++)
 			impl->source.info.position[i] = SPA_AUDIO_CHANNEL_AUX0 + i;
 	}
@@ -1005,10 +1011,12 @@ static int send_follower_available(struct impl *impl)
 	snprintf(params.follower_name, sizeof(params.follower_name), "%s", pw_get_host_name());
 	params.mtu = htonl(impl->mtu);
 	params.transport_sync = htonl(0);
-	params.send_audio_channels = htonl(impl->sink.wanted_n_audio);
-	params.recv_audio_channels = htonl(impl->source.wanted_n_audio);
-	params.send_midi_channels = htonl(impl->sink.wanted_n_midi);
-	params.recv_midi_channels = htonl(impl->source.wanted_n_midi);
+	/* send/recv is from the perspective of the manager, so what we send (sink)
+	 * is recv on the manager and vice versa. */
+	params.recv_audio_channels = htonl(impl->sink.wanted_n_audio);
+	params.send_audio_channels = htonl(impl->source.wanted_n_audio);
+	params.recv_midi_channels = htonl(impl->sink.wanted_n_midi);
+	params.send_midi_channels = htonl(impl->source.wanted_n_midi);
 	params.sample_encoder = htonl(NJ2_ENCODER_FLOAT);
 	params.follower_sync_mode = htonl(1);
         params.network_latency = htonl(impl->latency);
@@ -1126,7 +1134,7 @@ static void restart_netjack2_socket(struct impl *impl)
 	create_netjack2_socket(impl);
 }
 
-static void on_timer_event(void *data, uint64_t expirations)
+static void on_timer_event(void *data)
 {
 	struct impl *impl = data;
 
@@ -1187,8 +1195,7 @@ static void impl_destroy(struct impl *impl)
 	if (impl->core && impl->do_disconnect)
 		pw_core_disconnect(impl->core);
 
-	if (impl->timer)
-		pw_loop_destroy_source(impl->main_loop, impl->timer);
+	pw_timer_queue_cancel(&impl->timer);
 
 	if (impl->data_loop)
 		pw_context_release_loop(impl->context, impl->data_loop);
@@ -1212,13 +1219,14 @@ static const struct pw_impl_module_events module_events = {
 	.destroy = module_destroy,
 };
 
-static void parse_audio_info(const struct pw_properties *props, struct spa_audio_info_raw *info)
+static int parse_audio_info(const struct pw_properties *props, struct spa_audio_info_raw *info)
 {
-	spa_audio_info_raw_init_dict_keys(info,
+	return spa_audio_info_raw_init_dict_keys(info,
 			&SPA_DICT_ITEMS(
 				 SPA_DICT_ITEM(SPA_KEY_AUDIO_FORMAT, "F32P")),
 			&props->dict,
 			SPA_KEY_AUDIO_CHANNELS,
+			SPA_KEY_AUDIO_LAYOUT,
 			SPA_KEY_AUDIO_POSITION, NULL);
 }
 
@@ -1277,6 +1285,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	}
 
 	impl->main_loop = pw_context_get_main_loop(context);
+	impl->timer_queue = pw_context_get_timer_queue(context);
 	impl->system = impl->main_loop->system;
 
 	impl->source.impl = impl;
@@ -1322,6 +1331,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 
 	copy_props(impl, props, PW_KEY_NODE_LOOP_NAME);
 	copy_props(impl, props, PW_KEY_AUDIO_CHANNELS);
+	copy_props(impl, props, SPA_KEY_AUDIO_LAYOUT);
 	copy_props(impl, props, SPA_KEY_AUDIO_POSITION);
 	copy_props(impl, props, PW_KEY_NODE_ALWAYS_PROCESS);
 	copy_props(impl, props, PW_KEY_NODE_GROUP);
@@ -1329,8 +1339,11 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	copy_props(impl, props, "midi.ports");
 	copy_props(impl, props, "audio.ports");
 
-	parse_audio_info(impl->source.props, &impl->source.info);
-	parse_audio_info(impl->sink.props, &impl->sink.info);
+	if ((res = parse_audio_info(impl->source.props, &impl->source.info)) < 0 ||
+	    (res = parse_audio_info(impl->sink.props, &impl->sink.info)) < 0) {
+		pw_log_error( "can't parse format: %s", spa_strerror(res));
+		goto error;
+	}
 
 	impl->source.wanted_n_midi = pw_properties_get_int32(impl->source.props,
 			"midi.ports", DEFAULT_MIDI_PORTS);
@@ -1363,13 +1376,6 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	pw_core_add_listener(impl->core,
 			&impl->core_listener,
 			&core_events, impl);
-
-	impl->timer = pw_loop_add_timer(impl->main_loop, on_timer_event, impl);
-	if (impl->timer == NULL) {
-		res = -errno;
-		pw_log_error("can't create timer source: %m");
-		goto error;
-	}
 
 	if ((res = create_netjack2_socket(impl)) < 0)
 		goto error;

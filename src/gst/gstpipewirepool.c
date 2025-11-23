@@ -57,7 +57,7 @@ pool_data_destroy (gpointer user_data)
   GstPipeWirePoolData *data = user_data;
 
   gst_object_unref (data->pool);
-  g_slice_free (GstPipeWirePoolData, data);
+  g_free (data);
 }
 
 void gst_pipewire_pool_wrap_buffer (GstPipeWirePool *pool, struct pw_buffer *b)
@@ -73,7 +73,7 @@ void gst_pipewire_pool_wrap_buffer (GstPipeWirePool *pool, struct pw_buffer *b)
 
   GST_DEBUG_OBJECT (pool, "wrap buffer, datas:%d", b->buffer->n_datas);
 
-  data = g_slice_new (GstPipeWirePoolData);
+  data = g_new0 (GstPipeWirePoolData, 1);
 
   buf = gst_buffer_new ();
 
@@ -158,9 +158,28 @@ void gst_pipewire_pool_wrap_buffer (GstPipeWirePool *pool, struct pw_buffer *b)
       gst_memory_resize (gmem, d->mapoffset, d->maxsize);
     }
     else if(d->type == SPA_DATA_DmaBuf) {
+      GstMapInfo info = { 0 };
+      GstFdMemoryFlags fd_flags = GST_FD_MEMORY_FLAG_NONE;
+
+      if (d->flags & SPA_DATA_FLAG_MAPPABLE && d->flags & SPA_DATA_FLAG_READABLE)
+        fd_flags |= GST_FD_MEMORY_FLAG_KEEP_MAPPED;
+
       gmem = gst_fd_allocator_alloc (pool->dmabuf_allocator, dup(d->fd),
-                d->mapoffset + d->maxsize, GST_FD_MEMORY_FLAG_NONE);
+        d->mapoffset + d->maxsize, fd_flags);
       gst_memory_resize (gmem, d->mapoffset, d->maxsize);
+
+      if (fd_flags & GST_FD_MEMORY_FLAG_KEEP_MAPPED) {
+        GstMapFlags map_flags = GST_MAP_READ;
+
+        if (d->flags & SPA_DATA_FLAG_WRITABLE)
+          map_flags |= GST_MAP_WRITE;
+
+        if (gst_memory_map (gmem, &info, map_flags)) {
+          gst_memory_unmap (gmem, &info);
+        } else {
+          GST_ERROR_OBJECT (pool, "mmaping buffer failed");
+        }
+      }
     }
     else if (d->type == SPA_DATA_MemPtr) {
       gmem = gst_memory_new_wrapped (0, d->data, d->maxsize, 0,
@@ -194,6 +213,7 @@ void gst_pipewire_pool_wrap_buffer (GstPipeWirePool *pool, struct pw_buffer *b)
 	  gst_buffer_add_video_crop_meta(buf);
   data->videotransform =
     spa_buffer_find_meta_data (b->buffer, SPA_META_VideoTransform, sizeof(*data->videotransform));
+  data->cursor = spa_buffer_find_meta_data (b->buffer, SPA_META_Cursor, sizeof(*data->cursor));
 
   gst_mini_object_set_qdata (GST_MINI_OBJECT_CAST (buf),
                              pool_data_quark,

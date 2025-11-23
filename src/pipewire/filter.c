@@ -36,7 +36,7 @@ struct buffer {
 	struct pw_buffer this;
 	uint32_t id;
 #define BUFFER_FLAG_MAPPED	(1 << 0)
-#define BUFFER_FLAG_QUEUED	(1 << 1)
+#define BUFFER_FLAG_DEQUEUED	(1 << 1)
 #define BUFFER_FLAG_ADDED	(1 << 2)
 	uint32_t flags;
 };
@@ -206,7 +206,7 @@ static void fix_datatype(struct spa_pod *param)
 	if (spa_pod_get_int(&vals[0], (int32_t*)&dataType) < 0)
 		return;
 
-	pw_log_debug("dataType: %u", dataType);
+	pw_log_debug("dataType: %" PRIu32, dataType);
 	if (dataType & (1u << SPA_DATA_MemPtr)) {
 		SPA_POD_VALUE(struct spa_pod_int, &vals[0]) =
 			dataType | (1<<SPA_DATA_MemFd);
@@ -356,10 +356,8 @@ static inline int push_queue(struct port *port, struct queue *queue, struct buff
 {
 	uint32_t index;
 
-	if (SPA_FLAG_IS_SET(buffer->flags, BUFFER_FLAG_QUEUED))
+	if (buffer->id >= port->n_buffers)
 		return -EINVAL;
-
-	SPA_FLAG_SET(buffer->flags, BUFFER_FLAG_QUEUED);
 
 	spa_ringbuffer_get_write_index(&queue->ring, &index);
 	queue->ids[index & MASK_BUFFERS] = buffer->id;
@@ -382,7 +380,6 @@ static inline struct buffer *pop_queue(struct port *port, struct queue *queue)
 	spa_ringbuffer_read_update(&queue->ring, index + 1);
 
 	buffer = &port->buffers[id];
-	SPA_FLAG_CLEAR(buffer->flags, BUFFER_FLAG_QUEUED);
 
 	return buffer;
 }
@@ -888,8 +885,7 @@ static int impl_port_use_buffers(void *object,
 	struct port *port;
 	struct pw_filter *filter = &impl->this;
 	uint32_t i, j, impl_flags;
-	int prot, res;
-	int size = 0;
+	int res, size = 0;
 
 	pw_log_debug("%p: port:%d.%d buffers:%u disconnecting:%d", impl,
 			direction, port_id, n_buffers, impl->disconnecting);
@@ -903,7 +899,6 @@ static int impl_port_use_buffers(void *object,
 	clear_buffers(port);
 
 	impl_flags = port->flags;
-	prot = PROT_READ | (direction == SPA_DIRECTION_OUTPUT ? PROT_WRITE : 0);
 
 	if (n_buffers > MAX_BUFFERS)
 		return -ENOSPC;
@@ -918,7 +913,12 @@ static int impl_port_use_buffers(void *object,
 		if (SPA_FLAG_IS_SET(impl_flags, PW_FILTER_PORT_FLAG_MAP_BUFFERS)) {
 			for (j = 0; j < buffers[i]->n_datas; j++) {
 				struct spa_data *d = &buffers[i]->datas[j];
-				if (SPA_FLAG_IS_SET(d->flags, SPA_DATA_FLAG_MAPPABLE)) {
+				if (d->data == NULL && SPA_FLAG_IS_SET(d->flags, SPA_DATA_FLAG_MAPPABLE)) {
+					int prot = 0;
+					if (SPA_FLAG_IS_SET(d->flags, SPA_DATA_FLAG_READABLE))
+						prot |= PROT_READ;
+					if (SPA_FLAG_IS_SET(d->flags, SPA_DATA_FLAG_WRITABLE))
+						prot |= PROT_WRITE;
 					if ((res = map_data(impl, d, prot)) < 0)
 						return res;
 					SPA_FLAG_SET(b->flags, BUFFER_FLAG_MAPPED);
@@ -941,6 +941,7 @@ static int impl_port_use_buffers(void *object,
 		pw_log_debug("%p: got buffer id:%d datas:%d mapped size %d", filter, i,
 				buffers[i]->n_datas, size);
 	}
+	port->n_buffers = n_buffers;
 
 	for (i = 0; i < n_buffers; i++) {
 		struct buffer *b = &port->buffers[i];
@@ -953,11 +954,9 @@ static int impl_port_use_buffers(void *object,
 		}
 
 		SPA_FLAG_SET(b->flags, BUFFER_FLAG_ADDED);
+
 		pw_filter_emit_add_buffer(filter, port->user_data, &b->this);
 	}
-
-	port->n_buffers = n_buffers;
-
 	return 0;
 }
 
@@ -970,9 +969,7 @@ static int impl_port_reuse_buffer(void *object, uint32_t port_id, uint32_t buffe
 		return -EINVAL;
 
 	pw_log_trace("%p: recycle buffer %d", impl, buffer_id);
-	if (buffer_id < port->n_buffers)
-		push_queue(port, &port->queued, &port->buffers[buffer_id]);
-
+	push_queue(port, &port->queued, &port->buffers[buffer_id]);
 	return 0;
 }
 
@@ -1449,7 +1446,7 @@ static void hook_removed(struct spa_hook *hook)
 {
 	struct filter *impl = hook->priv;
 	if (impl->data_loop)
-		pw_loop_invoke(impl->data_loop, do_remove_callbacks, 1, NULL, 0, true, impl);
+		pw_loop_locked(impl->data_loop, do_remove_callbacks, 1, NULL, 0, impl);
 	else
 		spa_zero(impl->rt_callbacks);
 	hook->priv = NULL;
@@ -1749,7 +1746,7 @@ static void add_audio_dsp_port_params(struct filter *impl, struct port *port)
 			SPA_FORMAT_AUDIO_format,   SPA_POD_Id(SPA_AUDIO_FORMAT_DSP_F32)));
 
 	spa_pod_builder_init(&b, buffer, sizeof(buffer));
-	add_param(impl, port, SPA_PARAM_Buffers, PARAM_FLAG_LOCKED,
+	add_param(impl, port, SPA_PARAM_Buffers, 0,
 		spa_pod_builder_add_object(&b,
 			SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers,
 			SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(1, 1, MAX_BUFFERS),
@@ -1855,8 +1852,10 @@ void *pw_filter_add_port(struct pw_filter *filter,
 			add_control_dsp_port_params(impl, p, 1u << SPA_CONTROL_Midi);
 		else if (spa_streq(str, "8 bit raw control"))
 			add_control_dsp_port_params(impl, p, 0);
-		else if (spa_streq(str, "32 bit raw UMP"))
+		else if (spa_streq(str, "32 bit raw UMP")) {
 			add_control_dsp_port_params(impl, p, 1u << SPA_CONTROL_UMP);
+			pw_properties_set(props, PW_KEY_FORMAT_DSP, "8 bit raw midi");
+		}
 	}
 	/* then override with user provided if any */
 	if (update_params(impl, p, SPA_ID_INVALID, params, n_params) < 0)
@@ -1968,7 +1967,8 @@ int pw_filter_get_time(struct pw_filter *filter, struct pw_time *time)
 	if (SPA_LIKELY(p != NULL)) {
 		impl->time.now = p->clock.nsec;
 		impl->time.rate = p->clock.rate;
-		if (SPA_UNLIKELY(impl->clock_id != p->clock.id)) {
+		if (SPA_UNLIKELY(impl->clock_id != p->clock.id ||
+		    SPA_FLAG_IS_SET(p->clock.flags, SPA_IO_CLOCK_FLAG_DISCONT))) {
 			impl->base_pos = p->clock.position - impl->time.ticks;
 			impl->clock_id = p->clock.id;
 		}
@@ -2011,6 +2011,7 @@ struct pw_buffer *pw_filter_dequeue_buffer(void *port_data)
 		return NULL;
 	}
 	pw_log_trace_fp("%p: dequeue buffer %d", p->filter, b->id);
+	SPA_FLAG_SET(b->flags, BUFFER_FLAG_DEQUEUED);
 
 	return &b->this;
 }
@@ -2020,6 +2021,13 @@ int pw_filter_queue_buffer(void *port_data, struct pw_buffer *buffer)
 {
 	struct port *p = SPA_CONTAINER_OF(port_data, struct port, user_data);
 	struct buffer *b = SPA_CONTAINER_OF(buffer, struct buffer, this);
+
+	if (!SPA_FLAG_IS_SET(b->flags, BUFFER_FLAG_DEQUEUED)) {
+		pw_log_warn("%p: tried to queue cleared buffer %d", p->filter, b->id);
+		return -EINVAL;
+	}
+	SPA_FLAG_CLEAR(b->flags, BUFFER_FLAG_DEQUEUED);
+
 	pw_log_trace_fp("%p: queue buffer %d", p->filter, b->id);
 	return push_queue(p, &p->queued, b);
 }
@@ -2079,8 +2087,8 @@ SPA_EXPORT
 int pw_filter_flush(struct pw_filter *filter, bool drain)
 {
 	struct filter *impl = SPA_CONTAINER_OF(filter, struct filter, this);
-	pw_loop_invoke(impl->data_loop,
-			drain ? do_drain : do_flush, 1, NULL, 0, true, impl);
+	pw_loop_locked(impl->data_loop,
+			drain ? do_drain : do_flush, 1, NULL, 0, impl);
 	return 0;
 }
 

@@ -139,7 +139,8 @@ static int get_valid_aac_bitrate(a2dp_aac_t *conf)
 static int codec_select_config(const struct media_codec *codec, uint32_t flags,
 		const void *caps, size_t caps_size,
 		const struct media_codec_audio_info *info,
-		const struct spa_dict *settings, uint8_t config[A2DP_MAX_CAPS_SIZE])
+		const struct spa_dict *settings, uint8_t config[A2DP_MAX_CAPS_SIZE],
+		void **config_data)
 {
 	a2dp_aac_t conf;
 	int i;
@@ -200,7 +201,7 @@ static int codec_enum_config(const struct media_codec *codec, uint32_t flags,
 	a2dp_aac_t conf;
 	struct spa_pod_frame f[2];
 	struct spa_pod_choice *choice;
-	uint32_t position[SPA_AUDIO_MAX_CHANNELS];
+	uint32_t position[2];
 	uint32_t i = 0;
 
 	if (caps_size < sizeof(conf))
@@ -370,9 +371,12 @@ static void *codec_init(const struct media_codec *codec, uint32_t flags,
 	/* If object type has multiple bits set (invalid per spec, see above),
 	 * assume the device usually means AAC-LC.
 	 */
-	if (conf->object_type & (AAC_OBJECT_TYPE_MPEG2_AAC_LC |
-						AAC_OBJECT_TYPE_MPEG4_AAC_LC)) {
+	if (conf->object_type & AAC_OBJECT_TYPE_MPEG4_AAC_LC) {
 		res = aacEncoder_SetParam(this->aacenc, AACENC_AOT, AOT_AAC_LC);
+		if (res != AACENC_OK)
+			goto error;
+	} else if (conf->object_type & AAC_OBJECT_TYPE_MPEG2_AAC_LC) {
+		res = aacEncoder_SetParam(this->aacenc, AACENC_AOT, AOT_MP2_AAC_LC);
 		if (res != AACENC_OK)
 			goto error;
 	} else if (conf->object_type & AAC_OBJECT_TYPE_MPEG4_AAC_ELD) {
@@ -578,7 +582,8 @@ static int codec_start_decode (void *data,
 	const struct rtp_header *header = src;
 	size_t header_size = sizeof(struct rtp_header);
 
-	spa_return_val_if_fail (src_size > header_size, -EINVAL);
+	if (src_size <= header_size)
+		return -EINVAL;
 
 	if (seqnum)
 		*seqnum = ntohs(header->sequence_number);
@@ -680,6 +685,7 @@ static void codec_set_log(struct spa_log *global_log)
 
 const struct media_codec a2dp_codec_aac = {
 	.id = SPA_BLUETOOTH_AUDIO_CODEC_AAC,
+	.kind = MEDIA_CODEC_A2DP,
 	.codec_id = A2DP_CODEC_MPEG24,
 	.name = "aac",
 	.description = "AAC",
@@ -705,6 +711,7 @@ const struct media_codec a2dp_codec_aac = {
 
 const struct media_codec a2dp_codec_aac_eld = {
 	.id = SPA_BLUETOOTH_AUDIO_CODEC_AAC_ELD,
+	.kind = MEDIA_CODEC_A2DP,
 	.codec_id = A2DP_CODEC_MPEG24,
 	.name = "aac_eld",
 	.description = "AAC-ELD",

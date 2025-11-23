@@ -12,6 +12,7 @@
 #include <spa/utils/list.h>
 #include <spa/utils/hook.h>
 #include <spa/utils/string.h>
+#include <spa/param/audio/raw-utils.h>
 #include <pipewire/log.h>
 #include <pipewire/map.h>
 #include <pipewire/properties.h>
@@ -226,14 +227,15 @@ int module_args_to_audioinfo_keys(struct impl *impl, struct pw_properties *props
 					info->channels, map.channels);
 			return -EINVAL;
 		}
-		channel_map_to_positions(&map, info->position);
+		channel_map_to_positions(&map, info->position, SPA_N_ELEMENTS(info->position));
 		pw_properties_set(props, key_channel_map, NULL);
 	} else {
 		if (info->channels == 0)
 			info->channels = impl->defs.sample_spec.channels;
 
 		if (info->channels == impl->defs.channel_map.channels) {
-			channel_map_to_positions(&impl->defs.channel_map, info->position);
+			channel_map_to_positions(&impl->defs.channel_map,
+					info->position, SPA_N_ELEMENTS(info->position));
 		} else if (info->channels == 1) {
 			info->position[0] = SPA_AUDIO_CHANNEL_MONO;
 		} else if (info->channels == 2) {
@@ -281,32 +283,40 @@ void audioinfo_to_properties(struct spa_audio_info_raw *info, struct pw_properti
 	if (info->rate)
 		pw_properties_setf(props, SPA_KEY_AUDIO_RATE, "%u", info->rate);
 	if (info->channels) {
-		char *s, *p;
+		char *s, *p, pos[8];
 
 		pw_properties_setf(props, SPA_KEY_AUDIO_CHANNELS, "%u", info->channels);
 
 		p = s = alloca(info->channels * 8);
 		for (i = 0; i < info->channels; i++)
 			p += spa_scnprintf(p, 8, "%s%s", i == 0 ? "" : ", ",
-					channel_id2name(info->position[i]));
+				channel_id2name(info->position[i], pos, sizeof(pos)));
 		pw_properties_setf(props, SPA_KEY_AUDIO_POSITION, "[ %s ]", s);
 	}
 }
 
-const struct module_info *module_info_find(struct impl *impl, const char *name)
+const struct module_info *module_info_next(struct impl *impl, const struct module_info *info)
 {
 	extern const struct module_info __start_pw_mod_pulse_modules[];
 	extern const struct module_info __stop_pw_mod_pulse_modules[];
 
-	const struct module_info *info = __start_pw_mod_pulse_modules;
+	if (info == NULL)
+		info = __start_pw_mod_pulse_modules;
+	else
+		info++;
+	if (info == __stop_pw_mod_pulse_modules)
+		return NULL;
+	return info;
+}
 
-	for (; info < __stop_pw_mod_pulse_modules; info++) {
+const struct module_info *module_info_find(struct impl *impl, const char *name)
+{
+	const struct module_info *info = NULL;
+
+	while ((info = module_info_next(impl, info)) != NULL) {
 		if (spa_streq(info->name, name))
 			return info;
 	}
-
-	spa_assert(info == __stop_pw_mod_pulse_modules);
-
 	return NULL;
 }
 

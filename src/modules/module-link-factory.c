@@ -2,12 +2,12 @@
 /* SPDX-FileCopyrightText: Copyright © 2018 Wim Taymans */
 /* SPDX-License-Identifier: MIT */
 
+#include "config.h"
+
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
 #include <dlfcn.h>
-
-#include "config.h"
 
 #include <spa/utils/result.h>
 #include <spa/utils/string.h>
@@ -193,8 +193,7 @@ static const struct pw_resource_events resource_events = {
 static void global_destroy(void *data)
 {
 	struct link_data *ld = data;
-	struct factory_data *d = ld->data;
-	pw_work_queue_cancel(d->work, ld, SPA_ID_INVALID);
+
 	spa_hook_remove(&ld->global_listener);
 	ld->global = NULL;
 }
@@ -213,6 +212,7 @@ static void link_destroy(void *data)
 		spa_hook_remove(&ld->global_listener);
 	if (ld->resource)
 		spa_hook_remove(&ld->resource_listener);
+	pw_work_queue_cancel(ld->data->work, ld, SPA_ID_INVALID);
 }
 
 static void link_initialized(void *data)
@@ -279,28 +279,12 @@ static const struct pw_impl_link_events link_events = {
 static struct pw_impl_port *get_port(struct pw_impl_node *node, enum spa_direction direction)
 {
 	struct pw_impl_port *p;
-	struct pw_context *context = pw_impl_node_get_context(node);
-	int res;
 
 	p = pw_impl_node_find_port(node, direction, PW_ID_ANY);
 
-	if (p == NULL || pw_impl_port_is_linked(p)) {
-		uint32_t port_id;
+	if (p == NULL || pw_impl_port_is_linked(p))
+		p = pw_impl_node_get_free_port(node, direction);
 
-		port_id = pw_impl_node_get_free_port_id(node, direction);
-		if (port_id == SPA_ID_INVALID)
-			return NULL;
-
-		p = pw_context_create_port(context, direction, port_id, NULL, 0);
-		if (p == NULL)
-			return NULL;
-
-		if ((res = pw_impl_port_add(p, node)) < 0) {
-			pw_log_warn("can't add port: %s", spa_strerror(res));
-			errno = -res;
-			return NULL;
-		}
-	}
 	return p;
 }
 

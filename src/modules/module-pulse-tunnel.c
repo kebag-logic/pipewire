@@ -2,6 +2,8 @@
 /* SPDX-FileCopyrightText: Copyright © 2021 Wim Taymans */
 /* SPDX-License-Identifier: MIT */
 
+#include "config.h"
+
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
@@ -13,8 +15,6 @@
 #include <signal.h>
 #include <limits.h>
 #include <math.h>
-
-#include "config.h"
 
 #include <spa/utils/result.h>
 #include <spa/utils/string.h>
@@ -72,6 +72,7 @@
  * - \ref PW_KEY_AUDIO_FORMAT
  * - \ref PW_KEY_AUDIO_RATE
  * - \ref PW_KEY_AUDIO_CHANNELS
+ * - \ref SPA_KEY_AUDIO_LAYOUT
  * - \ref SPA_KEY_AUDIO_POSITION
  * - \ref PW_KEY_NODE_LATENCY
  * - \ref PW_KEY_NODE_NAME
@@ -117,6 +118,8 @@ PW_LOG_TOPIC_STATIC(mod_topic, "mod." NAME);
 #define DEFAULT_CHANNELS 2
 #define DEFAULT_POSITION "[ FL FR ]"
 
+#define MAX_CHANNELS	SPA_AUDIO_MAX_CHANNELS
+
 #define MODULE_USAGE	"( remote.name=<remote> ] "				\
 			"( node.latency=<latency as fraction> ] "		\
 			"( node.name=<name of the nodes> ] "			\
@@ -148,6 +151,7 @@ static const struct spa_dict_item module_props[] = {
 struct impl {
 	struct pw_context *context;
 	struct pw_loop *main_loop;
+	struct pw_timer_queue *timer_queue;
 
 #define MODE_SINK	0
 #define MODE_SOURCE	1
@@ -194,7 +198,7 @@ struct impl {
 	bool do_disconnect:1;
 	bool stopping;
 
-	struct spa_source *timer;
+	struct pw_timer timer;
 	uint32_t reconnect_interval_ms;
 	bool recovering;
 };
@@ -294,10 +298,10 @@ static void stream_param_changed(void *d, uint32_t id, const struct spa_pod *par
 		{
 			struct pa_cvolume volume;
 			uint32_t n;
-			float vols[SPA_AUDIO_MAX_CHANNELS];
+			float vols[MAX_CHANNELS];
 
 			if ((n = spa_pod_copy_array(&prop->value, SPA_TYPE_Float,
-					vols, SPA_AUDIO_MAX_CHANNELS)) > 0) {
+					vols, SPA_N_ELEMENTS(vols))) > 0) {
 				volume.channels = SPA_MIN(PA_CHANNELS_MAX, n);
 				for (n = 0; n < volume.channels; n++)
 					volume.values[n] = pa_sw_volume_from_linear(vols[n]);
@@ -525,7 +529,7 @@ static void cleanup_streams(struct impl *impl)
 		pw_stream_destroy(impl->stream);
 }
 
-static void on_timer_event(void *data, uint64_t expirations)
+static void on_timer_event(void *data)
 {
 	struct impl *impl = data;
 	cleanup_streams(impl);
@@ -538,13 +542,9 @@ do_schedule_recovery(struct spa_loop *loop,
 {
 	struct impl *impl = user_data;
 	if (impl->reconnect_interval_ms > 0) {
-		struct timespec value;
-		uint64_t timestamp;
-
-		timestamp = impl->reconnect_interval_ms * SPA_NSEC_PER_MSEC;
-		value.tv_sec = timestamp / SPA_NSEC_PER_SEC;
-		value.tv_nsec = timestamp % SPA_NSEC_PER_SEC;
-		pw_loop_update_timer(impl->main_loop, impl->timer, &value, NULL, false);
+		pw_timer_queue_add(impl->timer_queue, &impl->timer,
+				NULL, impl->reconnect_interval_ms * SPA_NSEC_PER_MSEC,
+				on_timer_event, impl);
 	} else {
 		if (impl->module)
 			pw_impl_module_schedule_destroy(impl->module);
@@ -755,7 +755,8 @@ static int create_pulse_stream(struct impl *impl)
 
 	map.channels = impl->info.channels;
 	for (i = 0; i < map.channels; i++)
-		map.map[i] = (pa_channel_position_t)channel_id2pa(impl->info.position[i], &aux);
+		map.map[i] = (pa_channel_position_t)channel_id2pa(
+				impl->info.position[i], &aux);
 
 	snprintf(stream_name, sizeof(stream_name), _("Tunnel for %s@%s"),
 			pw_get_user_name(), pw_get_host_name());
@@ -835,10 +836,10 @@ do_stream_sync_volumes(struct spa_loop *loop,
 	struct spa_pod_frame f[1];
 	struct spa_pod *param;
 	uint32_t i, channels;
-	float vols[SPA_AUDIO_MAX_CHANNELS];
-	float soft_vols[SPA_AUDIO_MAX_CHANNELS];
+	float vols[MAX_CHANNELS];
+	float soft_vols[MAX_CHANNELS];
 
-	channels = SPA_MIN(impl->volume.channels, SPA_AUDIO_MAX_CHANNELS);
+	channels = SPA_MIN(impl->volume.channels, MAX_CHANNELS);
 	for (i = 0; i < channels; i++) {
 		vols[i] = (float)pa_sw_volume_to_linear(impl->volume.values[i]);
 		soft_vols[i] = 1.0f;
@@ -1029,8 +1030,7 @@ static void impl_destroy(struct impl *impl)
 	pw_properties_free(impl->stream_props);
 	pw_properties_free(impl->props);
 
-	if (impl->timer)
-		pw_loop_destroy_source(impl->main_loop, impl->timer);
+	pw_timer_queue_cancel(&impl->timer);
 
 	free(impl->buffer);
 	free(impl);
@@ -1049,9 +1049,9 @@ static const struct pw_impl_module_events module_events = {
 	.destroy = module_destroy,
 };
 
-static void parse_audio_info(const struct pw_properties *props, struct spa_audio_info_raw *info)
+static int parse_audio_info(const struct pw_properties *props, struct spa_audio_info_raw *info)
 {
-	spa_audio_info_raw_init_dict_keys(info,
+	return spa_audio_info_raw_init_dict_keys(info,
 			&SPA_DICT_ITEMS(
 				 SPA_DICT_ITEM(SPA_KEY_AUDIO_FORMAT, DEFAULT_FORMAT),
 				 SPA_DICT_ITEM(SPA_KEY_AUDIO_RATE, SPA_STRINGIFY(DEFAULT_RATE)),
@@ -1060,6 +1060,7 @@ static void parse_audio_info(const struct pw_properties *props, struct spa_audio
 			SPA_KEY_AUDIO_FORMAT,
 			SPA_KEY_AUDIO_RATE,
 			SPA_KEY_AUDIO_CHANNELS,
+			SPA_KEY_AUDIO_LAYOUT,
 			SPA_KEY_AUDIO_POSITION, NULL);
 }
 
@@ -1144,6 +1145,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	impl->module = module;
 	impl->context = context;
 	impl->main_loop = pw_context_get_main_loop(context);
+	impl->timer_queue = pw_context_get_timer_queue(context);
 
 	spa_ringbuffer_init(&impl->ring);
 	impl->buffer = calloc(1, RINGBUFFER_SIZE);
@@ -1165,13 +1167,6 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	impl->reconnect_interval_ms = pw_properties_get_uint32(props,
 			"reconnect.interval.ms", 0);
 
-	impl->timer = pw_loop_add_timer(impl->main_loop, on_timer_event, impl);
-	if (impl->timer == NULL) {
-		res = -errno;
-		pw_log_error("can't create timer source: %m");
-		goto error;
-	}
-
 	impl->latency_msec = pw_properties_get_uint32(props, "pulse.latency", DEFAULT_LATENCY_MSEC);
 
 	if (pw_properties_get(props, PW_KEY_NODE_VIRTUAL) == NULL)
@@ -1190,6 +1185,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	copy_props(impl, props, PW_KEY_AUDIO_FORMAT);
 	copy_props(impl, props, PW_KEY_AUDIO_RATE);
 	copy_props(impl, props, PW_KEY_AUDIO_CHANNELS);
+	copy_props(impl, props, SPA_KEY_AUDIO_LAYOUT);
 	copy_props(impl, props, SPA_KEY_AUDIO_POSITION);
 	copy_props(impl, props, PW_KEY_NODE_NAME);
 	copy_props(impl, props, PW_KEY_NODE_DESCRIPTION);
@@ -1199,7 +1195,10 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	copy_props(impl, props, PW_KEY_NODE_NETWORK);
 	copy_props(impl, props, PW_KEY_MEDIA_CLASS);
 
-	parse_audio_info(impl->stream_props, &impl->info);
+	if ((res = parse_audio_info(impl->stream_props, &impl->info)) < 0) {
+		pw_log_error("can't parse format: %s", spa_strerror(res));
+		goto error;
+	}
 
 	impl->frame_size = calc_frame_size(&impl->info);
 	if (impl->frame_size == 0) {

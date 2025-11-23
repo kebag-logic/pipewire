@@ -44,6 +44,7 @@ struct measurement {
 	int64_t finish;
 	struct spa_fraction latency;
 	uint32_t xrun_count;
+	bool async;
 };
 
 struct node {
@@ -419,7 +420,8 @@ static int process_follower_block(struct data *d, const struct spa_pod *pod, str
 			SPA_POD_Long(&m.finish),
 			SPA_POD_Int(&m.status),
 			SPA_POD_Fraction(&m.latency),
-			SPA_POD_OPT_Int(&m.xrun_count))) < 0)
+			SPA_POD_OPT_Int(&m.xrun_count),
+			SPA_POD_OPT_Bool(&m.async))) < 0)
 		return res;
 
 	if ((n = find_node(d, id)) == NULL)
@@ -540,7 +542,7 @@ static void print_node(struct data *d, struct node *dr, struct node *n, int y)
 					i->xrun_count - dr->info_base :
 					n->measurement.xrun_count - n->measurement_base,
 			active ? n->format : "",
-			n->driver == n ? "" : " + ",
+			n->driver == n ? "" : n->measurement.async ? " = " : " + ",
 			n->name);
 }
 
@@ -562,7 +564,7 @@ static void do_refresh(struct data *d, bool force_refresh)
 		return;
 
 	if (!d->batch_mode) {
-		wclear(d->win);
+		werase(d->win);
 		wattron(d->win, A_REVERSE);
 		wprintw(d->win, "%-*.*s", COLS, COLS, HEADER);
 		wattroff(d->win, A_REVERSE);

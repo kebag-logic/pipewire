@@ -609,7 +609,7 @@ static void test_array(const char *str, const char * const vals[])
 
 	spa_json_init(&it[0], str, strlen(str));
 	if (spa_json_enter_array(&it[0], &it[1]) <= 0)
-		spa_json_init(&it[1], str, strlen(str));
+		spa_json_init_relax(&it[1], '[', str, strlen(str));
 	for (i = 0; vals[i]; i++) {
 		pwtest_int_gt(spa_json_get_string(&it[1], val, sizeof(val)), 0);
 		pwtest_str_eq(val, vals[i]);
@@ -624,6 +624,7 @@ PWTEST(json_array)
 	test_array("[FL FR]", (const char *[]){ "FL", "FR", NULL });
 	test_array("FL FR", (const char *[]){ "FL", "FR", NULL });
 	test_array("[ FL FR ]", (const char *[]){ "FL", "FR", NULL });
+	test_array("FL FR FC", (const char *[]){ "FL", "FR", "FC", NULL });
 
 	return PWTEST_PASS;
 }
@@ -882,8 +883,15 @@ static int validate_strict_json(struct spa_json *it, int depth, FILE *f)
 			fprintf(f, "%d", v);
 	} else if (spa_json_is_float(value, len)) {
 		float v;
-		if (spa_json_parse_float(value, len, &v) > 0)
-			fprintf(f, "%G", v);
+		char float_str[64];
+		if (spa_json_parse_float(value, len, &v) > 0) {
+			int i, l;
+			l = spa_scnprintf(float_str, sizeof(float_str), "%G", v);
+			for (i = 0; i < l; i++)
+				if (float_str[i] == ',')
+					float_str[i] = '.';
+			fprintf(f, "%s", float_str);
+		}
 	} else {
 		/* bare value: error here, as we want to test
 		 * int/float/etc parsing */

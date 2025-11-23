@@ -684,7 +684,7 @@ static void stop_driver_timer(struct impl *this)
 
 	/* Perform the actual stop within
 	 * the dataloop to avoid data races. */
-	spa_loop_invoke(this->data_loop, do_remove_driver_timer_source, 0, NULL, 0, true, this);
+	spa_loop_locked(this->data_loop, do_remove_driver_timer_source, 0, NULL, 0, this);
 }
 
 static void on_driver_timeout(struct spa_source *source)
@@ -795,7 +795,7 @@ static void reevaluate_following_state(struct impl *this)
 	if (following != this->following) {
 		spa_log_debug(this->log, "%p: following state changed: %d->%d", this, this->following, following);
 		this->following = following;
-		spa_loop_invoke(this->data_loop, do_reevaluate_following_state, 0, NULL, 0, true, this);
+		spa_loop_locked(this->data_loop, do_reevaluate_following_state, 0, NULL, 0, this);
 	}
 }
 
@@ -967,11 +967,15 @@ static int write_queued_output_buffers(struct impl *this)
 	 * If during the write attempts, only a portion of a chunk
 	 * is written, we must keep track of the portion that hasn't
 	 * been consumed yet. offset_within_oldest_output_buffer
-	 * exists for this purpose. In this sink node, each SPA
-	 * buffer has exactly one chunk, so when a chunk is fully
-	 * consumed, the corresponding buffer is removed from the
-	 * queued_output_buffers list, marked as available, and
-	 * returned to the pool through spa_node_call_reuse_buffer(). */
+	 * exists for this purpose. This can happen when the
+	 * device_write() call below returns 0. The loop is then
+	 * aborted, and the chunk is not fully written.
+	 *
+	 * In this sink node, each SPA buffer has exactly one chunk,
+	 * so when a chunk is fully consumed, the corresponding buffer
+	 * is removed from the queued_output_buffers list, marked as
+	 * available, and returned to the pool through
+	 * spa_node_call_reuse_buffer(). */
 again:
 	total_num_written_bytes = 0;
 

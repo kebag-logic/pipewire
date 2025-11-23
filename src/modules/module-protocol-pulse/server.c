@@ -31,6 +31,7 @@
 #include <spa/utils/result.h>
 #include <pipewire/pipewire.h>
 
+#include "network-utils.h"
 #include "client.h"
 #include "commands.h"
 #include "defs.h"
@@ -375,6 +376,7 @@ on_connect(void *data, int fd, uint32_t mask)
 	struct client *client = NULL;
 	const char *client_access = NULL;
 	const char *error_reason = NULL;
+	char ipname[256];
 	pid_t pid;
 
 	length = sizeof(name);
@@ -384,7 +386,7 @@ on_connect(void *data, int fd, uint32_t mask)
 			if (server->n_clients > 0) {
 				int m = server->source->mask;
 				SPA_FLAG_CLEAR(m, SPA_IO_IN);
-				pw_loop_update_io(impl->loop, server->source, m);
+				pw_loop_update_io(impl->main_loop, server->source, m);
 				server->wait_clients++;
 			}
 		}
@@ -404,7 +406,7 @@ on_connect(void *data, int fd, uint32_t mask)
 
 	pw_log_debug("server %p: new client %p fd:%d", server, client, client_fd);
 
-	client->source = pw_loop_add_io(impl->loop,
+	client->source = pw_loop_add_io(impl->main_loop,
 					client_fd,
 					SPA_IO_ERR | SPA_IO_HUP | SPA_IO_IN,
 					true, on_client_data, client);
@@ -418,9 +420,17 @@ on_connect(void *data, int fd, uint32_t mask)
 	if (client->props == NULL)
 		goto error;
 
+
 	pw_properties_setf(client->props,
 			"pulse.server.type", "%s",
 			server->addr.ss_family == AF_UNIX ? "unix" : "tcp");
+
+	if (server->addr.ss_family != AF_UNIX) {
+		uint16_t port = 0;
+		if (pw_net_get_ip(&name, ipname, sizeof(ipname), NULL, &port) >= 0)
+			pw_properties_setf(client->props,
+					"pulse.server.peer", "%s:%d", ipname, port);
+	}
 
 	client->routes = pw_properties_new(NULL, NULL);
 	if (client->routes == NULL)
@@ -430,7 +440,7 @@ on_connect(void *data, int fd, uint32_t mask)
 		client_access = server->client_access;
 
 	if (server->addr.ss_family == AF_UNIX) {
-		spa_autofree char *app_id = NULL, *snap_app_id = NULL, *devices = NULL;
+		spa_autofree char *app_id = NULL, *snap_app_id = NULL, *devices = NULL, *instance_id = NULL;
 #ifdef HAVE_SNAP
 		pw_sandbox_access_t snap_access;
 #endif
@@ -441,7 +451,7 @@ on_connect(void *data, int fd, uint32_t mask)
 			pw_log_warn("setsockopt(SO_PRIORITY) failed: %m");
 #endif
 		pid = get_client_pid(client, client_fd);
-		if (pid != 0 && pw_check_flatpak(pid, &app_id, &devices) == 1) {
+		if (pid != 0 && pw_check_flatpak(pid, &app_id, &instance_id, &devices) == 1) {
 			/*
 			 * XXX: we should really use Portal client access here
 			 *
@@ -464,6 +474,8 @@ on_connect(void *data, int fd, uint32_t mask)
 			client_access = "flatpak";
 			pw_properties_set(client->props, "pipewire.access.portal.app_id",
 					app_id);
+			pw_properties_set(client->props, "pipewire.access.portal.instance_id",
+					instance_id);
 
 			if (devices && (spa_streq(devices, "all") ||
 							spa_strstartswith(devices, "all;") ||
@@ -947,7 +959,7 @@ static int server_start(struct server *server, const struct sockaddr_storage *ad
 	if (fd < 0)
 		return fd;
 
-	server->source = pw_loop_add_io(impl->loop, fd, SPA_IO_IN, true, on_connect, server);
+	server->source = pw_loop_add_io(impl->main_loop, fd, SPA_IO_IN, true, on_connect, server);
 	if (server->source == NULL) {
 		res = -errno;
 		pw_log_error("server %p: can't create server source: %m", impl);
@@ -1098,7 +1110,7 @@ void server_free(struct server *server)
 	spa_hook_list_call(&impl->hooks, struct impl_events, server_stopped, 0, server);
 
 	if (server->source)
-		pw_loop_destroy_source(impl->loop, server->source);
+		pw_loop_destroy_source(impl->main_loop, server->source);
 
 	if (server->addr.ss_family == AF_UNIX && !server->activated)
 		unlink(((const struct sockaddr_un *) &server->addr)->sun_path);

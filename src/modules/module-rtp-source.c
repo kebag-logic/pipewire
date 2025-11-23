@@ -15,12 +15,14 @@
 #include <net/if.h>
 #include <ctype.h>
 
+#include <spa/utils/atomic.h>
 #include <spa/utils/hook.h>
 #include <spa/utils/result.h>
 #include <spa/utils/ringbuffer.h>
 #include <spa/utils/defs.h>
 #include <spa/utils/dll.h>
 #include <spa/utils/json.h>
+#include <spa/utils/ratelimit.h>
 #include <spa/param/audio/format-utils.h>
 #include <spa/control/control.h>
 #include <spa/debug/types.h>
@@ -34,11 +36,12 @@
 
 /** \page page_module_rtp_source RTP source
  *
- * The `rtp-source` module creates a PipeWire source that receives audio
- * and midi RTP packets.
+ * The `rtp-source` module creates a PipeWire source that receives audio RTP packets.
+ * These RTP packets may contain raw PCM data, Opus encoded audio, or midi audio.
  *
  * This module is usually loaded from the \ref page_module_rtp_sap so that the
- * source.ip and source.port and format parameters matches that of the sender.
+ * source.ip and source.port and format parameters matches that of the sender that
+ * is announced via SAP.
  *
  * ## Module Name
  *
@@ -56,6 +59,8 @@
  * - `sess.latency.msec = <float>`: target network latency in milliseconds, default 100
  * - `sess.ignore-ssrc = <bool>`: ignore SSRC, default false
  * - `sess.media = <string>`: the media type audio|midi|opus, default audio
+ * - `sess.ts-direct = <bool>`: use direct timestamp mode, default false
+ *                (see the Buffer Modes section below)
  * - `stream.may-pause = <bool>`: pause the stream when no data is reveived, default false
  * - `stream.props = {}`: properties to be passed to the stream
  *
@@ -67,6 +72,7 @@
  * - \ref PW_KEY_AUDIO_FORMAT
  * - \ref PW_KEY_AUDIO_RATE
  * - \ref PW_KEY_AUDIO_CHANNELS
+ * - \ref SPA_KEY_AUDIO_LAYOUT
  * - \ref SPA_KEY_AUDIO_POSITION
  * - \ref PW_KEY_MEDIA_NAME
  * - \ref PW_KEY_MEDIA_CLASS
@@ -103,6 +109,47 @@
  * ]
  *\endcode
  *
+ * ## Buffer modes
+ *
+ * RTP source nodes created by this module use an internal ring buffer. Received RTP audio
+ * data is written into this ring buffer. When the node's process callback is run, it reads
+ * from that ring buffer and provides audio data from it to the graph.
+ *
+ * The `sess.ts-direct` option controls the _buffer mode_, which defines how this ring buffer
+ * is used. The RTP source nodes created by this module can operate in one of two of these
+ * buffer modes. In both modes, the RTP source node uses the timestamps of incoming RTP
+ * packets to write into the ring buffer (more specifically, at the position
+ * `timestamp + latency from the sess.latency.msec option`). The modes are:
+ *
+ * -# *Constant latency mode*: This is the default mode. It is used when `sess.ts-direct`
+ *    is set to false. `sess.latency.msec` then defines the ideal fill level of the ring
+ *    buffer. If the fill level is above or below this, then a DLL is used to adjust the
+ *    consumption of the buffer contents. If the fill level is below a critical value
+ *    (that's the amount of data that is needed in a cycle), or if the fill level equals
+ *    the total buffer size (meaning that no more data can be fed into the buffer), the
+ *    buffer contents are resynchronized, meaning that the existing contents are thrown
+ *    away, and the ring buffer is reset. This buffer mode is useful for when a constant
+ *    latency is desired, and the actual moment playback starts is unimportant (meaning
+ *    that playback is not necessarily in sync with other devices). This mode requires
+ *    no special graph driver.
+ * -# *Direct timestamp mode*: This is an alternate mode, used when `sess.ts-direct` is
+ *    set to true. In this mode, ring buffer over- and underrun and fill level are not
+ *    directly tracked; instead, they are handled implicitly. There is no constant latency
+ *    maintained. The current time (more specifically, the \ref spa_io_clock::position field
+ *    of \ref spa_io_position::clock) is directly used during playback to retrieve audio
+ *    data. This assumes that a graph driver is used whose time is somehow synchronized
+ *    to the sender's. Since the current time is directly used as an offset within the
+ *    ring buffer, the correct data is always pulled from the ring buffer, that is, the
+ *    data that shall be played now, in sync with the sender (and with other receivers).
+ *    This buffer mode is useful for when receivers shall play in sync with each other,
+ *    and shall use one common synchronized time, provided through the \ref spa_io_clock .
+ *    `sess.latency.msec` functions as a configurable assumed maximum transport delay
+ *    instead of a constant latency quantity in this mode. The DLL is not used in this
+ *    mode, since the graph driver is assumed to be synchronized to the sender, as said,
+ *    so any output sinks in the graph will already adjust their consumption pace to
+ *    match the pace of the graph driver.
+ *    AES67 sessions use this mode, for example.
+ *
  * \since 0.3.60
  */
 
@@ -110,6 +157,9 @@
 
 PW_LOG_TOPIC(mod_topic, "mod." NAME);
 #define PW_LOG_TOPIC_DEFAULT mod_topic
+
+#define DEFAULT_IGMP_CHECK_INTERVAL_SEC	5
+#define DEFAULT_IGMP_DEADLINE_SEC	30
 
 #define DEFAULT_CLEANUP_SEC		60
 #define DEFAULT_SOURCE_IP		"224.0.0.56"
@@ -126,6 +176,7 @@ PW_LOG_TOPIC(mod_topic, "mod." NAME);
 		"( audio.rate=<sample rate, default:"SPA_STRINGIFY(DEFAULT_RATE)"> ) "				\
 		"( audio.channels=<number of channels, default:"SPA_STRINGIFY(DEFAULT_CHANNELS)"> ) "		\
 		"( audio.position=<channel map, default:"DEFAULT_POSITION"> ) "					\
+		"( audio.layout=<channel layout, default:"DEFAULT_LAYOUT"> ) "					\
 		"( stream.props= { key=value ... } ) "
 
 static const struct spa_dict_item module_info[] = {
@@ -135,25 +186,57 @@ static const struct spa_dict_item module_info[] = {
 	{ PW_KEY_MODULE_VERSION, PACKAGE_VERSION },
 };
 
+struct igmp_recovery {
+	struct pw_timer timer;
+	int socket_fd;
+	struct sockaddr_storage mcast_addr;
+	socklen_t mcast_len;
+	uint32_t if_index;
+	bool is_ipv6;
+	/* This is the interval the recovery timer runs at. The timer
+	 * checks at each interval if recovery is required. This value
+	 * is defined by the igmp.check.interval.sec property. */
+	uint32_t check_interval;
+	/* This is the deadline for packets to arrive. If the deadline
+	 * is exceeded, an IGMP recovery is attempted. This value is
+	 * defined by the igmp.deadline.sec property. */
+	uint32_t deadline;
+};
+
 struct impl {
 	struct pw_impl_module *module;
 	struct spa_hook module_listener;
 	struct pw_properties *props;
 	struct pw_context *context;
 
-	struct pw_loop *loop;
+	struct pw_loop *main_loop;
 	struct pw_loop *data_loop;
+	struct pw_timer_queue *timer_queue;
 
 	struct pw_core *core;
 	struct spa_hook core_listener;
 	struct spa_hook core_proxy_listener;
 	unsigned int do_disconnect:1;
 
+	struct spa_ratelimit rate_limit;
+
 	char *ifname;
 	bool always_process;
 	uint32_t cleanup_interval;
 
-	struct spa_source *timer;
+	/* IGMP recovery (triggers when no RTP packets are
+	 * received after the recovery deadline is reached) */
+	struct igmp_recovery igmp_recovery;
+
+	/* Monotonic timestamp of the last time a packet was
+	 * received. This is accessed with atomic accessors
+	 * to avoid race conditions. */
+	uint64_t last_packet_time;
+
+	struct pw_timer standby_timer;
+	/* This timer is used when the first stream_start() call fails because
+	 * of an ENODEV error (see the stream_start() code for details) */
+	struct pw_timer stream_start_retry_timer;
 
 	struct pw_properties *stream_props;
 	struct rtp_stream *stream;
@@ -166,11 +249,28 @@ struct impl {
 	uint8_t *buffer;
 	size_t buffer_size;
 
-	bool receiving;
+#define STATE_IDLE	0
+#define STATE_PROBE	1
+#define STATE_RECEIVING	2
+#define STATE_STOPPING	3
+	int state;
 	bool may_pause;
 	bool standby;
 	bool waiting;
 };
+
+static inline uint64_t get_time_ns(struct impl *impl)
+{
+	uint64_t res;
+	if (impl->stream) {
+		res = rtp_stream_get_nsec(impl->stream);
+	} else {
+		struct timespec ts;
+		clock_gettime(CLOCK_MONOTONIC, &ts);
+		res = SPA_TIMESPEC_TO_NSEC(&ts);
+	}
+	return res;
+}
 
 static int do_start(struct spa_loop *loop, bool async, uint32_t seq, const void *data,
 		size_t size, void *user_data)
@@ -198,8 +298,13 @@ on_rtp_io(void *data, int fd, uint32_t mask)
 {
 	struct impl *impl = data;
 	ssize_t len;
+	int suppressed;
+	uint64_t current_time;
+
+	current_time = get_time_ns(impl);
 
 	if (mask & SPA_IO_IN) {
+
 		if ((len = recv(fd, impl->buffer, impl->buffer_size, 0)) < 0)
 			goto receive_error;
 
@@ -207,26 +312,169 @@ on_rtp_io(void *data, int fd, uint32_t mask)
 			goto short_packet;
 
 		if (SPA_LIKELY(impl->stream)) {
-			if (rtp_stream_receive_packet(impl->stream, impl->buffer, len) < 0)
+			if (rtp_stream_receive_packet(impl->stream, impl->buffer, len,
+							current_time) < 0)
 				goto receive_error;
 		}
 
-		if (!impl->receiving) {
-			impl->receiving = true;
-			pw_loop_invoke(impl->loop, do_start, 1, NULL, 0, false, impl);
+		/* Update last packet timestamp for IGMP recovery.
+		 * The recovery timer will check this to see if recovery
+		 * is necessary. Do this _before_ invoking do_start()
+		 * in case the stream is waking up from standby. */
+		SPA_ATOMIC_STORE(impl->last_packet_time, current_time);
+
+		if (SPA_ATOMIC_LOAD(impl->state) != STATE_RECEIVING) {
+			if (!SPA_ATOMIC_CAS(impl->state, STATE_PROBE, STATE_RECEIVING)) {
+				if (SPA_ATOMIC_CAS(impl->state, STATE_IDLE, STATE_RECEIVING))
+					pw_loop_invoke(impl->main_loop, do_start, 1, NULL, 0, false, impl);
+			}
 		}
 	}
 	return;
 
 receive_error:
-	pw_log_warn("recv error: %m");
+	if ((suppressed = spa_ratelimit_test(&impl->rate_limit, current_time)) >= 0)
+		pw_log_warn("(%d suppressed) recv() error: %m", suppressed);
 	return;
 short_packet:
-	pw_log_warn("short packet of len %zd received", len);
+	if ((suppressed = spa_ratelimit_test(&impl->rate_limit, current_time)) >= 0)
+		pw_log_warn("(%d suppressed) short packet of len %zd received",
+				suppressed, len);
 	return;
 }
 
-static int make_socket(const struct sockaddr* sa, socklen_t salen, char *ifname)
+static int rejoin_igmp_group(struct spa_loop *loop, bool async, uint32_t seq,
+				const void *data, size_t size, void *user_data)
+{
+	/* IMPORTANT: This must be run from within the data loop. */
+
+	int res;
+	struct impl *impl = user_data;
+	uint64_t current_time;
+
+	/* Force IGMP membership refresh by leaving the group first, then rejoin */
+	if (impl->igmp_recovery.is_ipv6) {
+		struct ipv6_mreq mr6;
+		memset(&mr6, 0, sizeof(mr6));
+		mr6.ipv6mr_multiaddr = ((struct sockaddr_in6*)&impl->igmp_recovery.mcast_addr)->sin6_addr;
+		mr6.ipv6mr_interface = impl->igmp_recovery.if_index;
+
+		/* Leave the group first */
+		res = setsockopt(impl->igmp_recovery.socket_fd, IPPROTO_IPV6, IPV6_LEAVE_GROUP,
+					&mr6, sizeof(mr6));
+		if (SPA_LIKELY(res == 0)) {
+			pw_log_debug("left IPv6 multicast group");
+		} else {
+			if (errno == EADDRNOTAVAIL) {
+				pw_log_debug("attempted to leave IPv6 multicast group, but "
+						"membership was already silently dropped");
+			} else {
+				pw_log_warn("failed to leave IPv6 multicast group: %m");
+			}
+		}
+
+		res = setsockopt(impl->igmp_recovery.socket_fd, IPPROTO_IPV6, IPV6_JOIN_GROUP,
+				&mr6, sizeof(mr6));
+		if (res < 0) {
+			pw_log_warn("failed to re-join IPv6 multicast group: %m");
+		} else {
+			pw_log_debug("re-joined IPv6 multicast group successfully");
+		}
+	} else {
+		struct ip_mreqn mr4;
+		memset(&mr4, 0, sizeof(mr4));
+		mr4.imr_multiaddr = ((struct sockaddr_in*)&impl->igmp_recovery.mcast_addr)->sin_addr;
+		mr4.imr_ifindex = impl->igmp_recovery.if_index;
+
+		/* Leave the group first */
+		res = setsockopt(impl->igmp_recovery.socket_fd, IPPROTO_IP, IP_DROP_MEMBERSHIP,
+					&mr4, sizeof(mr4));
+		if (SPA_LIKELY(res == 0)) {
+			pw_log_debug("left IPv4 multicast group");
+		} else {
+			if (errno == EADDRNOTAVAIL) {
+				pw_log_debug("attempted to leave IPv4 multicast group, but "
+						"membership was already silently dropped");
+			} else {
+				pw_log_warn("failed to leave IPv4 multicast group: %m");
+			}
+		}
+
+		res = setsockopt(impl->igmp_recovery.socket_fd, IPPROTO_IP, IP_ADD_MEMBERSHIP,
+				&mr4, sizeof(mr4));
+		if (res < 0) {
+			pw_log_warn("failed to re-join IPv4 multicast group: %m");
+		} else {
+			pw_log_debug("re-joined IPv4 multicast group successfully");
+		}
+	}
+
+	current_time = get_time_ns(impl);
+	SPA_ATOMIC_STORE(impl->last_packet_time, current_time);
+
+	return res;
+}
+
+static void on_igmp_recovery_timer_event(void *data)
+{
+	int res;
+	struct impl *impl = data;
+	char addr[128];
+	uint64_t current_time, elapsed_seconds, last_packet_time;
+
+	/* Only attempt recovery if we have a valid socket and multicast address */
+	if (SPA_UNLIKELY(impl->igmp_recovery.socket_fd < 0)) {
+		pw_log_trace("no socket, skipping IGMP recovery");
+		goto finish;
+	}
+
+	/* This check if performed even if standby = false or
+	 * receiving != STATE_RECEIVING , because the very reason
+	 * for these states may be that the receiver socket was
+	 * silently kicked out of the IGMP group (which causes data
+	 * to no longer arrive, thus leading to these states). */
+
+	current_time = get_time_ns(impl);
+	last_packet_time = SPA_ATOMIC_LOAD(impl->last_packet_time);
+	elapsed_seconds = (current_time - last_packet_time) / SPA_NSEC_PER_SEC;
+
+	/* Only trigger recovery if enough time has elapsed since last packet */
+	if (elapsed_seconds < impl->igmp_recovery.deadline) {
+		pw_log_trace("IGMP recovery check: %" PRIu64 " seconds elapsed, "
+				"need %" PRIu32 " seconds", elapsed_seconds,
+				impl->igmp_recovery.deadline);
+		goto finish;
+	}
+
+	pw_net_get_ip(&impl->igmp_recovery.mcast_addr, addr, sizeof(addr), NULL, NULL);
+	pw_log_debug("starting IGMP recovery for %s", addr);
+
+	/* Run the actual recovery in the data loop, since recovery involves
+	 * rejoining the socket to the IGMP group. By running this in the
+	 * data loop, race conditions due to stray packets causing an on_rtp_io()
+	 * invocation at the same time when the IGMP group rejoining takes place
+	 * is avoided, since on_rtp_io() too runs in the data loop.
+	 * This is a blocking call to make sure the rejoin attempt was fully
+	 * done by the time this callback ends. (rejoin_igmp_group() does not
+	 * do work that takes a long time to finish. )*/
+	res = pw_loop_locked(impl->data_loop, rejoin_igmp_group, 1, NULL, 0, impl);
+
+	if (SPA_LIKELY(res == 0)) {
+		pw_log_debug("IGMP recovery for %s finished", addr);
+	} else {
+		pw_log_error("error while finishing IGMP recovery for %s: %s",
+				addr, spa_strerror(res));
+	}
+
+finish:
+	pw_timer_queue_add(impl->timer_queue, &impl->igmp_recovery.timer,
+			&impl->igmp_recovery.timer.timeout,
+			impl->igmp_recovery.check_interval * SPA_NSEC_PER_SEC,
+			on_igmp_recovery_timer_event, impl);
+}
+
+static int make_socket(const struct sockaddr* sa, socklen_t salen, char *ifname,
+			struct igmp_recovery *igmp_recovery)
 {
 	int af, fd, val, res;
 	struct ifreq req;
@@ -306,6 +554,16 @@ static int make_socket(const struct sockaddr* sa, socklen_t salen, char *ifname)
 		goto error;
 	}
 
+	/* Store multicast info for recovery */
+	igmp_recovery->socket_fd = fd;
+	igmp_recovery->mcast_addr = ba;
+	igmp_recovery->mcast_len = salen;
+	igmp_recovery->if_index = req.ifr_ifindex;
+	igmp_recovery->is_ipv6 = (af == AF_INET6);
+	pw_log_debug("stored %s multicast info: socket_fd=%d, "
+			"if_index=%d", igmp_recovery->is_ipv6 ?
+			"IPv6" : "IPv4", fd, req.ifr_ifindex);
+
 	if (bind(fd, (struct sockaddr*)&ba, salen) < 0) {
 		res = -errno;
 		pw_log_error("bind() failed: %m");
@@ -324,37 +582,118 @@ error:
 	return res;
 }
 
-static int stream_start(struct impl *impl)
+static void stream_report_error(void *data, const char *error)
 {
+	struct impl *impl = data;
+	if (error) {
+		pw_log_error("stream error: %s", error);
+		pw_impl_module_schedule_destroy(impl->module);
+	}
+}
+
+static void stream_open_connection(void *data, int *result);
+
+static void on_open_connection_retry_timer_event(void *data)
+{
+	struct impl *impl = data;
+	pw_log_debug("trying again to open connection after previous attempt failed with ENODEV");
+	stream_open_connection(impl, NULL);
+}
+
+static void stream_open_connection(void *data, int *result)
+{
+	int res = 0;
 	int fd;
+	struct impl *impl = data;
 
 	if (impl->source != NULL)
-		return 0;
+		goto finish;
 
 	pw_log_info("starting RTP listener");
 
 	if ((fd = make_socket((const struct sockaddr *)&impl->src_addr,
-					impl->src_len, impl->ifname)) < 0) {
-		pw_log_error("failed to create socket: %m");
-		return -errno;
+					impl->src_len, impl->ifname,
+					&(impl->igmp_recovery))) < 0) {
+		/* If make_socket() tries to create a socket and join to a multicast
+		 * group while the network interfaces are not ready yet to do so
+		 * (usually because a network manager component is still setting up
+		 * those network interfaces), ENODEV will be returned. This is essentially
+		 * a race condition. There is no discernible way to be notified when the
+		 * network interfaces are ready for that operation, so the next best
+		 * approach is to essentially do a form of polling by retrying the
+		 * stream_start() call after some time. The stream_start_retry_timer exists
+		 * precisely for that purpose. This means that ENODEV is not treated as
+		 * an error, but instead, it triggers the creation of that timer. */
+		if (fd == -ENODEV) {
+			pw_log_warn("failed to create socket because network device is not ready "
+				"and present yet; will try again");
+
+			pw_timer_queue_cancel(&impl->stream_start_retry_timer);
+			/* Use a 1-second retry interval. The network interfaces
+			 * are likely to be up and running then. */
+			pw_timer_queue_add(impl->timer_queue, &impl->stream_start_retry_timer,
+					NULL, 1 * SPA_NSEC_PER_SEC,
+					on_open_connection_retry_timer_event, impl);
+
+			/* It is important to return 0 in this case. Otherwise, the nonzero return
+			 * value will later be propagated through the core as an error. */
+			res = 0;
+			goto finish;
+		} else {
+			pw_log_error("failed to create socket: %s", spa_strerror(fd));
+			/* If ENODEV was returned earlier, and the stream_start_retry_timer
+			 * was consequently created, but then a non-ENODEV error occurred,
+			 * the timer must be stopped and removed. */
+			pw_timer_queue_cancel(&impl->stream_start_retry_timer);
+			res = fd;
+			goto finish;
+		}
 	}
+
+	/* Cleanup the timer in case ENODEV occurred earlier, and this time,
+	 * the socket creation succeeded. */
+	pw_timer_queue_cancel(&impl->stream_start_retry_timer);
 
 	impl->source = pw_loop_add_io(impl->data_loop, fd,
 				SPA_IO_IN, true, on_rtp_io, impl);
 	if (impl->source == NULL) {
 		pw_log_error("can't create io source: %m");
 		close(fd);
-		return -errno;
+		res = -errno;
+		goto finish;
 	}
-	return 0;
+
+	if ((res = pw_timer_queue_add(impl->timer_queue, &impl->igmp_recovery.timer,
+			NULL, impl->igmp_recovery.check_interval * SPA_NSEC_PER_SEC,
+			on_igmp_recovery_timer_event, impl)) < 0) {
+		pw_log_error("can't add timer: %s", spa_strerror(res));
+		goto finish;
+	}
+
+finish:
+	if (res != 0) {
+		pw_log_error("failed to start RTP stream: %s", spa_strerror(res));
+		rtp_stream_set_error(impl->stream, res, "Can't start RTP stream");
+	}
+
+	if (result)
+		*result = res;
 }
 
-static void stream_stop(struct impl *impl)
+static void stream_close_connection(void *data, int *result)
 {
+	struct impl *impl = data;
+
+	if (result)
+		*result = 0;
+
 	if (!impl->source)
 		return;
 
 	pw_log_info("stopping RTP listener");
+
+	pw_timer_queue_cancel(&impl->stream_start_retry_timer);
+	pw_timer_queue_cancel(&impl->igmp_recovery.timer);
 
 	pw_loop_destroy_source(impl->data_loop, impl->source);
 	impl->source = NULL;
@@ -364,25 +703,6 @@ static void stream_destroy(void *d)
 {
 	struct impl *impl = d;
 	impl->stream = NULL;
-}
-
-static void stream_state_changed(void *data, bool started, const char *error)
-{
-	struct impl *impl = data;
-	int res;
-
-	if (error) {
-		pw_log_error("stream error: %s", error);
-		pw_impl_module_schedule_destroy(impl->module);
-	} else if (started) {
-		if ((res = stream_start(impl)) < 0) {
-			pw_log_error("failed to start RTP stream: %s", spa_strerror(res));
-			rtp_stream_set_error(impl->stream, res, "Can't start RTP stream");
-		}
-	} else {
-		if (!impl->always_process && !impl->standby)
-			stream_stop(impl);
-	}
 }
 
 static void stream_props_changed(struct impl *impl, uint32_t id, const struct spa_pod *param)
@@ -449,17 +769,20 @@ static void stream_param_changed(void *data, uint32_t id, const struct spa_pod *
 static const struct rtp_stream_events stream_events = {
 	RTP_VERSION_STREAM_EVENTS,
 	.destroy = stream_destroy,
-	.state_changed = stream_state_changed,
+	.report_error = stream_report_error,
+	.open_connection = stream_open_connection,
+	.close_connection = stream_close_connection,
 	.param_changed = stream_param_changed,
 };
 
-static void on_timer_event(void *data, uint64_t expirations)
+static void on_standby_timer_event(void *data)
 {
 	struct impl *impl = data;
 
-	pw_log_debug("timer %d", impl->receiving);
+	pw_log_debug("standby timer event; state: %d standby: %d waiting: %d",
+			impl->state, impl->standby, impl->waiting);
 
-	if (!impl->receiving) {
+	if (SPA_ATOMIC_CAS(impl->state, STATE_PROBE, STATE_STOPPING)) {
 		if (!impl->standby) {
 			struct spa_dict_item item[1];
 
@@ -474,10 +797,15 @@ static void on_timer_event(void *data, uint64_t expirations)
 				rtp_stream_set_active(impl->stream, false);
 		}
 		//pw_impl_module_schedule_destroy(impl->module);
+		SPA_ATOMIC_STORE(impl->state, STATE_IDLE);
 	} else {
 		pw_log_debug("timeout, keeping active RTP source");
+		SPA_ATOMIC_CAS(impl->state, STATE_RECEIVING, STATE_PROBE);
 	}
-	impl->receiving = false;
+
+	pw_timer_queue_add(impl->timer_queue, &impl->standby_timer,
+			&impl->standby_timer.timeout, impl->cleanup_interval * SPA_NSEC_PER_SEC,
+			on_standby_timer_event, impl);
 }
 
 static void core_destroy(void *d)
@@ -502,8 +830,9 @@ static void impl_destroy(struct impl *impl)
 	if (impl->core && impl->do_disconnect)
 		pw_core_disconnect(impl->core);
 
-	if (impl->timer)
-		pw_loop_destroy_source(impl->loop, impl->timer);
+	pw_timer_queue_cancel(&impl->standby_timer);
+	pw_timer_queue_cancel(&impl->stream_start_retry_timer);
+	pw_timer_queue_cancel(&impl->igmp_recovery.timer);
 
 	if (impl->data_loop)
 		pw_context_release_loop(impl->context, impl->data_loop);
@@ -559,7 +888,6 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	struct pw_context *context = pw_impl_module_get_context(module);
 	struct impl *impl;
 	const char *str, *sess_name;
-	struct timespec value, interval;
 	struct pw_properties *props, *stream_props;
 	int64_t ts_offset;
 	char addr[128];
@@ -585,8 +913,12 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 
 	impl->module = module;
 	impl->context = context;
-	impl->loop = pw_context_get_main_loop(context);
+	impl->main_loop = pw_context_get_main_loop(context);
+	impl->timer_queue = pw_context_get_timer_queue(context);
 	impl->data_loop = pw_context_acquire_loop(context, &props->dict);
+
+	impl->rate_limit.interval = 2 * SPA_NSEC_PER_SEC;
+	impl->rate_limit.burst = 1;
 
 	if ((sess_name = pw_properties_get(props, "sess.name")) == NULL)
 		sess_name = pw_get_host_name();
@@ -607,6 +939,7 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	copy_props(impl, props, PW_KEY_AUDIO_FORMAT);
 	copy_props(impl, props, PW_KEY_AUDIO_RATE);
 	copy_props(impl, props, PW_KEY_AUDIO_CHANNELS);
+	copy_props(impl, props, SPA_KEY_AUDIO_LAYOUT);
 	copy_props(impl, props, SPA_KEY_AUDIO_POSITION);
 	copy_props(impl, props, PW_KEY_NODE_NAME);
 	copy_props(impl, props, PW_KEY_NODE_DESCRIPTION);
@@ -665,8 +998,19 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 	 * till we make it (or get timed out) */
 	pw_properties_set(stream_props, "rtp.receiving", "true");
 
-	impl->cleanup_interval = pw_properties_get_uint32(props,
+	impl->cleanup_interval = pw_properties_get_uint32(stream_props,
 			"cleanup.sec", DEFAULT_CLEANUP_SEC);
+
+	impl->igmp_recovery.check_interval = SPA_MAX(pw_properties_get_uint32(stream_props,
+					"igmp.check.interval.sec",
+					DEFAULT_IGMP_CHECK_INTERVAL_SEC), 1u);
+	pw_log_info("using IGMP check interval of %" PRIu32 " second(s)",
+			impl->igmp_recovery.check_interval);
+
+	impl->igmp_recovery.deadline = SPA_MAX(pw_properties_get_uint32(stream_props,
+					"igmp.deadline.sec", DEFAULT_IGMP_DEADLINE_SEC), 5u);
+	pw_log_info("using IGMP deadline of %" PRIu32 " second(s)",
+			impl->igmp_recovery.deadline);
 
 	impl->core = pw_context_get_object(impl->context, PW_TYPE_INTERFACE_Core);
 	if (impl->core == NULL) {
@@ -691,17 +1035,12 @@ int pipewire__module_init(struct pw_impl_module *module, const char *args)
 			&impl->core_listener,
 			&core_events, impl);
 
-	impl->timer = pw_loop_add_timer(impl->loop, on_timer_event, impl);
-	if (impl->timer == NULL) {
-		res = -errno;
-		pw_log_error("can't create timer source: %m");
+	if ((res = pw_timer_queue_add(impl->timer_queue, &impl->standby_timer,
+			NULL, impl->cleanup_interval * SPA_NSEC_PER_SEC,
+			on_standby_timer_event, impl)) < 0) {
+		pw_log_error("can't add timer: %s", spa_strerror(res));
 		goto out;
 	}
-	value.tv_sec = impl->cleanup_interval;
-	value.tv_nsec = 0;
-	interval.tv_sec = impl->cleanup_interval;
-	interval.tv_nsec = 0;
-	pw_loop_update_timer(impl->loop, impl->timer, &value, &interval, false);
 
 	impl->stream = rtp_stream_new(impl->core,
 			PW_DIRECTION_OUTPUT, pw_properties_copy(stream_props),

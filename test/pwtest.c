@@ -19,9 +19,6 @@
 #ifdef HAVE_PIDFD_OPEN
 #include <sys/syscall.h>
 #endif
-#ifdef HAVE_LIBCAP
-#include <sys/capability.h>
-#endif
 #include <sys/epoll.h>
 #include <sys/ptrace.h>
 #include <sys/resource.h>
@@ -33,6 +30,7 @@
 #include <valgrind/valgrind.h>
 
 #include "spa/utils/ansi.h"
+#include "spa/utils/cleanup.h"
 #include "spa/utils/string.h"
 #include "spa/utils/defs.h"
 #include "spa/utils/list.h"
@@ -788,6 +786,7 @@ static void set_test_env(struct pwtest_context *ctx, struct pwtest_test *t)
 	replace_env(t, "ACP_PROFILES_DIR", SOURCE_ROOT "/spa/plugins/alsa/mixer/profile-sets");
 	replace_env(t, "PIPEWIRE_LOG_SYSTEMD", "false");
 	replace_env(t, "PWTEST_DATA_DIR", SOURCE_ROOT "/test/data");
+	replace_env(t, "LD_LIBRARY_PATH", BUILD_ROOT "/src/pipewire:" BUILD_ROOT "pipewire-jack/src");
 }
 
 static void close_pipes(int fds[_FD_LAST])
@@ -1297,39 +1296,20 @@ static void list_tests(struct pwtest_context *ctx)
 
 static bool is_debugger_attached(void)
 {
-	bool rc = false;
-#ifdef HAVE_LIBCAP
-	int status;
-	int pid = fork();
+	spa_autofree char *line = NULL;
+	size_t length = 0;
 
-	if (pid == -1)
-		return 0;
+	spa_autoptr(FILE) f = fopen("/proc/self/status", "re");
+	if (!f)
+		return false;
 
-	if (pid == 0) {
-		int ppid = getppid();
-		cap_t caps = cap_get_pid(ppid);
-		cap_flag_value_t cap_val;
-
-		if (cap_get_flag(caps, CAP_SYS_PTRACE, CAP_EFFECTIVE, &cap_val) == -1 ||
-		    cap_val != CAP_SET)
-			_exit(false);
-
-		if (ptrace(PTRACE_ATTACH, ppid, NULL, 0) == 0) {
-			waitpid(ppid, NULL, 0);
-			ptrace(PTRACE_CONT, ppid, NULL, 0);
-			ptrace(PTRACE_DETACH, ppid, NULL, 0);
-			rc = false;
-		} else {
-			rc = true;
-		}
-		_exit(rc);
-	} else {
-		waitpid(pid, &status, 0);
-		rc = WEXITSTATUS(status);
+	while (getline(&line, &length, f) >= 0) {
+		unsigned int tracer_pid;
+		if (sscanf(line, "TracerPid: %u", &tracer_pid) == 1)
+			return tracer_pid > 0;
 	}
 
-#endif
-	return !!rc;
+	return false;
 }
 
 static void usage(FILE *fp, const char *progname)

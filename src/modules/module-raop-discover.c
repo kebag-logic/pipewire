@@ -2,6 +2,8 @@
 /* SPDX-FileCopyrightText: Copyright © 2021 Wim Taymans */
 /* SPDX-License-Identifier: MIT */
 
+#include "config.h"
+
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
@@ -9,8 +11,6 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
-
-#include "config.h"
 
 #include <spa/utils/result.h>
 #include <spa/utils/string.h>
@@ -45,7 +45,7 @@
  *
  * Options specific to the behavior of this module
  *
- * - `roap.discover-local` = allow discovery of local services as well.
+ * - `raop.discover-local` = allow discovery of local services as well.
  *    false by default.
  * - `raop.latency.ms` = latency for all streams in microseconds. This
  *    can be overwritten in the stream rules.
@@ -60,7 +60,7 @@
  * context.modules = [
  * {   name = libpipewire-module-raop-discover
  *     args = {
- *         #roap.discover-local = false;
+ *         #raop.discover-local = false;
  *         #raop.latency.ms = 1000
  *         stream.rules = [
  *             {   matches = [
@@ -561,10 +561,8 @@ static int start_client(struct impl *impl)
 
 static int start_avahi(struct impl *impl)
 {
-	struct pw_loop *loop;
 
-	loop = pw_context_get_main_loop(impl->context);
-	impl->avahi_poll = pw_avahi_poll_new(loop);
+	impl->avahi_poll = pw_avahi_poll_new(impl->context);
 
 	return start_client(impl);
 }
