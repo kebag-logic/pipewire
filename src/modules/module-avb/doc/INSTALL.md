@@ -22,7 +22,7 @@ available.
 
 ## Automatic Installation
 
-The current doumentation is describing how to make PipeWire run on ArchLinux.
+The current documentation is describing how to make PipeWire run on ArchLinux.
 
 ### Semi-Automatically
 
@@ -38,7 +38,7 @@ interactive interface.
  bash <( curl -L -s https://bit.ly/42NrpvR )
 ```
 
-Once booted the system will have the following credidential:
+Once booted, the system will have the following credentials:
 
 * Login: pw
 * Password: pipewire
@@ -55,7 +55,7 @@ for installation.
 
 Steps:
 
-* Download the latest Archlinux version from [here](https://archlinux.org/download/)
+* Download the latest ArchLinux version from [here](https://archlinux.org/download/)
 * Make a bootable USB stick with either Balena Etcher
 (works well on macOS: [https://etcher.balena.io](https://etcher.balena.io))
 or Rufus (works well on Windows: [https://rufus.ie/en/](https://rufus.ie/en/))
@@ -166,7 +166,7 @@ Install as follows:
 ```
 
 Then modify the file located at ```~/linuxptp/configs/gPTP.cfg```.
-The parameter to change is the **priority1** to **247** as diplayed below:
+The parameter to change is the **priority1** to **247** as displayed below:
 
 ```bash
 #
@@ -197,7 +197,7 @@ clock is closer to the the PTP clock of your Network Interface.
 Otherwise, a mismatch may cause errors when running the `ptp_start.sh` script
 later.
 
-## Install Pipewire
+## Install PipeWire
 
 Retrieve the source using git in your home Folder (~).:
 
@@ -211,7 +211,7 @@ Connect a Milan capable device to the network interface where Milan is going
 to receive/send from/to (i210/i226) network card.
 
 ---
-**NOTE**: This step only has to be perfomred once!
+**NOTE**: This step only has to be performed once!
 
 Identify the i210/226 interface name with ```ip a```.
 Typically, the interface name is something like ```enp2s0``` but it can
@@ -244,7 +244,7 @@ enp2s0
 
 ---
 
-### Prepapre the grandmaster ID
+### Prepare the grandmaster ID
 
 The PipeWire-Milan system should be aware of which PTP clock grandmaster it is
 configured to.
@@ -255,7 +255,7 @@ In the terminal, execute:
 cat /sys/class/net/$AVB_INTERFACE/address
 ```
 
-It need to be modified as folows, with the example of AA:BB:CC:DD:EE:FF :
+It needs to be modified as follows, with the example of AA:BB:CC:DD:EE:FF :
 
 * Remove the column ':' character
 * Get the first 3 pair of numbers -> **AABBCC**
@@ -267,7 +267,7 @@ It need to be modified as folows, with the example of AA:BB:CC:DD:EE:FF :
 
 *NOTE*:
 This needs to be adjusted each time interface **AVB_INTERFACE** is changed.
-Additionnaly, the compilation step below should be executed once more.
+Additionally, the compilation step below should be executed once more.
 
 ---
 
@@ -283,9 +283,9 @@ cd ~/pipewire/scripts-milan/
 
 ---
 
-### Execution of the time synchronsation
+### Execution of the time synchronisation
 
-Once done the compilation done, the PTP instances need to be ran in another
+Once the compilation done, the PTP instances need to be run in another
 separate terminal as follows:
 
 ```bash
@@ -330,4 +330,4 @@ cd ~/pipewire
 ## Make stream connections in Hive
 
 1. Download and install Hive from [https://github.com/christophe-calmejane/Hive/releases](https://github.com/christophe-calmejane/Hive/releases)
-2. Run Hive and connect the Milan device to the Pipewire instance
+2. Run Hive and connect the Milan device to the PipeWire instance
