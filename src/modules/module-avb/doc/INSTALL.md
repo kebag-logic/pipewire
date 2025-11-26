@@ -89,7 +89,6 @@ or Rufus (works well on Windows: [https://rufus.ie/en/](https://rufus.ie/en/))
             git \
             glib2-devel \
             gnome-console \
-            gnu-netcat \
             htop \
             less \
             linux-firmware \
@@ -97,6 +96,7 @@ or Rufus (works well on Windows: [https://rufus.ie/en/](https://rufus.ie/en/))
             meson \
             networkmanager \
             numactl \
+            openbsd-netcat \
             openssh \
             openvpn \
             qpwgraph \
