@@ -165,7 +165,7 @@ Install as follows:
  sudo make install
 ```
 
-Then modify the file located at ```~/linuxptp/configs/gPTP.conf```.
+Then modify the file located at ```~/linuxptp/configs/gPTP.cfg```.
 The parameter to change is the **priority1** to **247** as diplayed below:
 
 ```bash
