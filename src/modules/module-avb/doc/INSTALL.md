@@ -269,6 +269,12 @@ It needs to be modified as follows, with the example of AA:BB:CC:DD:EE:FF :
 This needs to be adjusted each time interface **AVB_INTERFACE** is changed.
 Additionally, the compilation step below should be executed once more.
 
+You can also use this one-line shell command to parse the MAC address:
+
+```bash
+cat /sys/class/net/$AVB_INTERFACE/address | tr -d ':' | awk '{print substr("0x" toupper($0),1,6) "FFFE" substr(toupper($0),7)}'
+```
+
 ---
 
 ### Compile PipeWire and install
