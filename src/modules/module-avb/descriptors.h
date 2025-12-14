@@ -21,7 +21,7 @@ static inline void init_descriptors(struct server *server)
 {
 	// TODO PERSISTENCE: retrieve the saved buffers.
 	/**************************************************************************************/
-	/* IEEE 1722.1-2021, Sec. 7.2.12 - STRINGS Descriptor 
+	/* IEEE 1722.1-2021, Sec. 7.2.12 - STRINGS Descriptor
 	* Up to 7 localized strings
 	*/
 	server_add_descriptor(server, AVB_AEM_DESC_STRINGS, 0,
@@ -182,7 +182,7 @@ static inline void init_descriptors(struct server *server)
 	/**************************************************************************************/
 	/* IEEE 1722.1-2021, Sec. 7.2.19 AUDIO_MAP Descriptor */
 	/* Milan v1.2, Sec. 5.3.3.9 */
-	
+
 	struct {
 		struct avb_aem_desc_audio_map desc;
 		struct avb_aem_audio_mapping_format maps[DSC_AUDIO_MAPS_NO_OF_MAPPINGS];
@@ -205,6 +205,26 @@ static inline void init_descriptors(struct server *server)
 	struct {
 		struct avb_aem_desc_audio_map desc;
 		struct avb_aem_audio_mapping_format maps[DSC_AUDIO_MAPS_NO_OF_MAPPINGS];
+	} __attribute__((__packed__)) maps_input_1 = {
+		.desc = {
+			.mapping_offset = htons(AVB_AEM_AUDIO_MAPPING_FORMAT_OFFSET),
+			.number_of_mappings = htons(DSC_AUDIO_MAPS_NO_OF_MAPPINGS),
+		},
+	};
+
+	for (uint32_t map_idx = 0; map_idx < DSC_AUDIO_MAPS_NO_OF_MAPPINGS; map_idx++) {
+		maps_input_1.maps[map_idx].mapping_stream_index    = htons(DSC_AUDIO_MAPS_MAPPING_STREAM_INDEX);
+		maps_input_1.maps[map_idx].mapping_cluster_channel = htons(DSC_AUDIO_MAPS_MAPPING_CLUSTER_CHANNEL);
+		maps_input_1.maps[map_idx].mapping_cluster_offset  = htons(map_idx);
+		maps_input_1.maps[map_idx].mapping_stream_channel  = htons(map_idx);
+	}
+	server_add_descriptor(server, AVB_AEM_DESC_AUDIO_MAP, 1,
+		 sizeof(maps_input_1), &maps_input_1);
+
+#if TALKER_ENABLE
+	struct {
+		struct avb_aem_desc_audio_map desc;
+		struct avb_aem_audio_mapping_format maps[DSC_AUDIO_MAPS_NO_OF_MAPPINGS];
 	} __attribute__((__packed__)) maps_output= {
 		.desc = {
 			.mapping_offset = htons(AVB_AEM_AUDIO_MAPPING_FORMAT_OFFSET),
@@ -219,20 +239,25 @@ static inline void init_descriptors(struct server *server)
 		maps_output.maps[map_idx].mapping_stream_channel  = htons(DSC_AUDIO_MAPS_NO_OF_MAPPINGS+map_idx);
 	}
 
-	server_add_descriptor(server, AVB_AEM_DESC_AUDIO_MAP, 1,
+	server_add_descriptor(server, AVB_AEM_DESC_AUDIO_MAP, 2,
 		 sizeof(maps_output), &maps_output);
+#endif
 
 	/**************************************************************************************/
 	/* IEEE 1722.1-2021, Sec. 7.2.16 AUDIO_CLUSTER Descriptor */
 	/* Milan v1.2, Sec. 5.3.3.8 */
-	
+
 	struct avb_aem_desc_audio_cluster clusters[DSC_AUDIO_CLUSTER_NO_OF_CLUSTERS];
 
 	for (uint32_t cluster_idx = 0; cluster_idx < DSC_AUDIO_CLUSTER_NO_OF_CLUSTERS; cluster_idx++) {
 		memset(clusters[cluster_idx].object_name, 0,
 			sizeof(clusters[cluster_idx].object_name));
 		// TODO: Make this scale automatically
+#if TALKER_ENABLE
 		if (cluster_idx < 8) {
+#else
+		if (cluster_idx < 16) {
+#endif
 			snprintf(clusters[cluster_idx].object_name, DSC_AUDIO_CLUSTER_OBJECT_NAME_LEN_IN_OCTET-1,
 						"Input %2u", cluster_idx);
 		} else {
@@ -289,7 +314,7 @@ static inline void init_descriptors(struct server *server)
 	server_add_descriptor(server, AVB_AEM_DESC_STREAM_PORT_OUTPUT, 0,
 			sizeof(stream_port_output0), &stream_port_output0);
 #endif
-	
+
 	/**************************************************************************************/
 	/* IEEE 1722.1-2021, Sec. 7.2.3 AUDIO_UNIT Descriptor */
 	/* Milan v1.2, Sec. 5.3.3.3 */
@@ -388,6 +413,47 @@ static inline void init_descriptors(struct server *server)
 	server_add_descriptor(server, AVB_AEM_DESC_STREAM_INPUT, 0,
 			sizeof(stream_input_0), &stream_input_0);
 
+    /**************************************************************************************/
+	/* IEEE 1722.1-2021, Sec. 7.2.6 STREAM_INPUT Descriptor */
+	/* Milan v1.2, Sec. 5.3.3.4 */
+
+    // TODO: 1722.1 lists redundant parameters that are not mentioned here.
+
+	struct {
+		struct avb_aem_desc_stream desc;
+		uint64_t stream_formats[DSC_STREAM_INPUT_NUMBER_OF_FORMATS];
+	} __attribute__ ((__packed__)) stream_input_1 =
+	{
+		{
+		.object_name = DSC_STREAM_INPUT_OBJECT_NAME_2,
+		.localized_description = htons(DSC_STREAM_INPUT_LOCALIZED_DESCRIPTION_2),
+		.clock_domain_index = htons(DSC_STREAM_INPUT_CLOCK_DOMAIN_INDEX_2),
+		.stream_flags = htons(DSC_STREAM_INPUT_STREAM_FLAGS_2),
+		.current_format = htobe64(DSC_STREAM_INPUT_CURRENT_FORMAT_2),
+		.formats_offset = htons(DSC_STREAM_INPUT_FORMATS_OFFSET_2),
+		.number_of_formats = htons(DSC_STREAM_INPUT_NUMBER_OF_FORMATS_2),
+		.backup_talker_entity_id_0 = htobe64(DSC_STREAM_INPUT_BACKUP_TALKER_ENTITY_ID_0_2),
+		.backup_talker_unique_id_0 = htons(DSC_STREAM_INPUT_BACKUP_TALKER_UNIQUE_ID_0_2),
+		.backup_talker_entity_id_1 = htobe64(DSC_STREAM_INPUT_BACKUP_TALKER_ENTITY_ID_1_2),
+		.backup_talker_unique_id_1 = htons(DSC_STREAM_INPUT_BACKUP_TALKER_UNIQUE_ID_1_2),
+		.backup_talker_entity_id_2 = htobe64(DSC_STREAM_INPUT_BACKUP_TALKER_ENTITY_ID_2_2),
+		.backup_talker_unique_id_2 = htons(DSC_STREAM_INPUT_BACKUP_TALKER_UNIQUE_ID_2_2),
+		.backedup_talker_entity_id = htobe64(DSC_STREAM_INPUT_BACKEDUP_TALKER_ENTITY_ID_2),
+		.backedup_talker_unique = htons(DSC_STREAM_INPUT_BACKEDUP_TALKER_UNIQUE_ID_2),
+		.avb_interface_index = htons(DSC_STREAM_INPUT_AVB_INTERFACE_INDEX_2),
+		.buffer_length = htonl(DSC_STREAM_INPUT_BUFFER_LENGTH_IN_NS_2)
+		},
+		.stream_formats = {
+			htobe64(DSC_STREAM_INPUT_FORMATS_0_2),
+			htobe64(DSC_STREAM_INPUT_FORMATS_1_2),
+			htobe64(DSC_STREAM_INPUT_FORMATS_2_2),
+			htobe64(DSC_STREAM_INPUT_FORMATS_3_2),
+			htobe64(DSC_STREAM_INPUT_FORMATS_4_2),
+		},
+	};
+	server_add_descriptor(server, AVB_AEM_DESC_STREAM_INPUT, 1,
+			sizeof(stream_input_1), &stream_input_1);
+
 	/**************************************************************************************/
     /* IEEE 1722.1-2021, Sec. 7.2.6 STREAM_INPUT Descriptor */
     /* Milan v1.2, Sec. 5.3.3.4 */
@@ -420,7 +486,7 @@ static inline void init_descriptors(struct server *server)
             htobe64(DSC_STREAM_INPUT_CRF_FORMATS_0),
         },
     };
-    server_add_descriptor(server, AVB_AEM_DESC_STREAM_INPUT, 1,
+    server_add_descriptor(server, AVB_AEM_DESC_STREAM_INPUT, 2,
             sizeof(stream_input_crf_0), &stream_input_crf_0);
 
 
