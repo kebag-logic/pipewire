@@ -301,8 +301,15 @@ struct server *avdecc_server_new(struct impl *impl, struct spa_dict *props)
 	avb_mrp_attribute_begin(server->domain_attr->mrp, 0);
 	avb_mrp_attribute_join(server->domain_attr->mrp, 0, true);
 
-	server_create_stream(server, SPA_DIRECTION_INPUT, 0);
-	server_create_stream(server, SPA_DIRECTION_OUTPUT, 0);
+	// Last STREAM_INPUT is CRF
+	for (int idx_listener=0; idx_listener < DSC_CONFIGURATION_NO_OF_STREAM_INPUTS-1; idx_listener++){
+		server_create_stream(server, SPA_DIRECTION_INPUT, idx_listener);
+	}
+#if TALKER_ENABLE
+	for (int idx_talker=0; idx_talker < DSC_CONFIGURATION_NO_OF_STREAM_OUTPUTS-1; idx_talker++){
+		server_create_stream(server, SPA_DIRECTION_OUTPUT, 0);
+	}
+#endif
 
 	avb_maap_reserve(server->maap, 1);
 
