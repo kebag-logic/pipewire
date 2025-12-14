@@ -369,6 +369,8 @@ struct stream *server_create_stream(struct server *server,
 	// TODO find the value from the descriptor
 	if (direction == SPA_DIRECTION_INPUT) {
 		// FIXME!11!! A Hacky hack for 4 channel output streams to work
+		// Here we currently hardcode the audio channels this must match
+		// DSC_STREAM_INPUT_CURRENT_FORMAT in the entity_model.h
 		stream->info.info.raw.channels = 4;
 	} else {
 		stream->info.info.raw.channels = 8;
