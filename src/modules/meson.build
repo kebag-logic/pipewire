@@ -737,6 +737,7 @@ if build_module_avb
       'module-avb/aecp.c',
       'module-avb/aecp-aem.c',
       'module-avb/avdecc.c',
+      'module-avb/gptp.c',
       'module-avb/maap.c',
       'module-avb/mmrp.c',
       'module-avb/mrp.c',

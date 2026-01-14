@@ -12,6 +12,7 @@ extern "C" {
 #endif
 
 struct server;
+struct avb_gptp;
 struct avb_mrp;
 
 #define AVB_TSN_ETH 0x22f0
@@ -71,6 +72,7 @@ struct server {
 
 	unsigned debug_messages:1;
 
+	struct avb_gptp *gptp;
 	struct avb_mrp *mrp;
 	struct avb_mmrp *mmrp;
 	struct avb_mvrp *mvrp;
