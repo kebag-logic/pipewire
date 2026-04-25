@@ -16,12 +16,15 @@
 #include "internal.h"
 #include "descriptor-field-value-types.h"
 #include "entity_model.h"
+#include "entity_parser.h"
+	struct spa_dict *props_diVct;
+	struct char *entity_dict = spa_dict_lookup_item(props_dict, "avb.properties.entity_model");
 
 static inline void init_descriptors(struct server *server)
 {
 	// TODO PERSISTENCE: retrieve the saved buffers.
 	/**************************************************************************************/
-	/* IEEE 1722.1-2021, Sec. 7.2.12 - STRINGS Descriptor 
+	/* IEEE 1722.1-2021, Sec. 7.2.12 - STRINGS Descriptor
 	* Up to 7 localized strings
 	*/
 	server_add_descriptor(server, AVB_AEM_DESC_STRINGS, 0,
@@ -48,35 +51,10 @@ static inline void init_descriptors(struct server *server)
 	/**************************************************************************************/
 	/* IEEE 1722.1-2021, Sec. 7.2.1 - ENTITY Descriptor */
 	/* Milan v1.2, Sec. 5.3.3.1 */
-
+	struct avb_aem_desc_entity entity_conf = conf_load_entity(server->impl->props);
 	server_add_descriptor(server, AVB_AEM_DESC_ENTITY, 0,
 			sizeof(struct avb_aem_desc_entity),
-			&(struct avb_aem_desc_entity)
-	{
-		.entity_id = htobe64(DSC_ENTITY_MODEL_ENTITY_ID),
-		.entity_model_id = htobe64(DSC_ENTITY_MODEL_ID),
-		.entity_capabilities = htonl(DSC_ENTITY_MODEL_ENTITY_CAPABILITIES),
-
-		.talker_stream_sources = htons(DSC_ENTITY_MODEL_TALKER_STREAM_SOURCES),
-		.talker_capabilities = htons(DSC_ENTITY_MODEL_TALKER_CAPABILITIES),
-
-		.listener_stream_sinks = htons(DSC_ENTITY_MODEL_LISTENER_STREAM_SINKS),
-		.listener_capabilities = htons(DSC_ENTITY_MODEL_LISTENER_CAPABILITIES),
-
-		.controller_capabilities = htons(DSC_ENTITY_MODEL_CONTROLLER_CAPABILITIES),
-
-		.available_index = htonl(DSC_ENTITY_MODEL_AVAILABLE_INDEX),
-		.association_id = htobe64(DSC_ENTITY_MODEL_ASSOCIATION_ID),
-
-		.entity_name = DSC_ENTITY_MODEL_ENTITY_NAME,
-		.vendor_name_string = htons(DSC_ENTITY_MODEL_VENDOR_NAME_STRING),
-		.model_name_string = htons(DSC_ENTITY_MODEL_MODEL_NAME_STRING),
-		.firmware_version = DSC_ENTITY_MODEL_FIRMWARE_VERSION,
-		.group_name = DSC_ENTITY_MODEL_GROUP_NAME,
-		.serial_number = DSC_ENTITY_MODEL_SERIAL_NUMBER,
-		.configurations_count = htons(DSC_ENTITY_MODEL_CONFIGURATIONS_COUNT),
-		.current_configuration = htons(DSC_ENTITY_MODEL_CURRENT_CONFIGURATION)
-	});
+			&entity_conf);
 
 	/**************************************************************************************/
 	/* IEEE 1722.1-2021, Sec. 7.2.2 - CONFIGURATION Descriptor*/
@@ -182,7 +160,7 @@ static inline void init_descriptors(struct server *server)
 	/**************************************************************************************/
 	/* IEEE 1722.1-2021, Sec. 7.2.19 AUDIO_MAP Descriptor */
 	/* Milan v1.2, Sec. 5.3.3.9 */
-	
+
 	struct {
 		struct avb_aem_desc_audio_map desc;
 		struct avb_aem_audio_mapping_format maps[DSC_AUDIO_MAPS_NO_OF_MAPPINGS];
@@ -225,7 +203,7 @@ static inline void init_descriptors(struct server *server)
 	/**************************************************************************************/
 	/* IEEE 1722.1-2021, Sec. 7.2.16 AUDIO_CLUSTER Descriptor */
 	/* Milan v1.2, Sec. 5.3.3.8 */
-	
+
 	struct avb_aem_desc_audio_cluster clusters[DSC_AUDIO_CLUSTER_NO_OF_CLUSTERS];
 
 	for (uint32_t cluster_idx = 0; cluster_idx < DSC_AUDIO_CLUSTER_NO_OF_CLUSTERS; cluster_idx++) {
@@ -289,7 +267,7 @@ static inline void init_descriptors(struct server *server)
 	server_add_descriptor(server, AVB_AEM_DESC_STREAM_PORT_OUTPUT, 0,
 			sizeof(stream_port_output0), &stream_port_output0);
 #endif
-	
+
 	/**************************************************************************************/
 	/* IEEE 1722.1-2021, Sec. 7.2.3 AUDIO_UNIT Descriptor */
 	/* Milan v1.2, Sec. 5.3.3.3 */
