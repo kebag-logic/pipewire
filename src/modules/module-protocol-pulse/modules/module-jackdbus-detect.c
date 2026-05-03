@@ -3,6 +3,7 @@
 /* SPDX-License-Identifier: MIT */
 
 #include <spa/utils/hook.h>
+#include <spa/utils/json-builder.h>
 #include <pipewire/pipewire.h>
 
 #include "../defs.h"
@@ -70,26 +71,29 @@ static const struct pw_impl_module_events module_events = {
 static int module_jackdbus_detect_load(struct module *module)
 {
 	struct module_jackdbus_detect_data *data = module->user_data;
-	FILE *f;
+	struct spa_json_builder b;
 	char *args;
 	size_t size;
+	int res;
 
 	pw_properties_setf(data->sink_props, "pulse.module.id",
 			"%u", module->index);
 	pw_properties_setf(data->source_props, "pulse.module.id",
 			"%u", module->index);
 
-	if ((f = open_memstream(&args, &size)) == NULL)
-		return -errno;
+	if ((res = spa_json_builder_memstream(&b, &args, &size, 0)) < 0)
+		return res;
 
-	fprintf(f, "{");
-	pw_properties_serialize_dict(f, &data->props->dict, 0);
-	fprintf(f, " source.props = {");
-	pw_properties_serialize_dict(f, &data->source_props->dict, 0);
-	fprintf(f, " } sink.props = {");
-	pw_properties_serialize_dict(f, &data->sink_props->dict, 0);
-	fprintf(f, " } }");
-	fclose(f);
+	spa_json_builder_array_push(&b, "{");
+	pw_properties_serialize_dict(b.f, &data->props->dict, 0);
+	spa_json_builder_object_push(&b,  "source.props", "{");
+	pw_properties_serialize_dict(b.f, &data->source_props->dict, 0);
+	spa_json_builder_pop(&b,          "}");
+	spa_json_builder_object_push(&b,  "sink.props", "{");
+	pw_properties_serialize_dict(b.f, &data->sink_props->dict, 0);
+	spa_json_builder_pop(&b,          "}");
+	spa_json_builder_pop(&b,        "}");
+	spa_json_builder_close(&b);
 
 	data->mod = pw_context_load_module(module->impl->context,
 			"libpipewire-module-jackdbus-detect",
@@ -115,6 +119,10 @@ static int module_jackdbus_detect_unload(struct module *module)
 		pw_impl_module_destroy(d->mod);
 		d->mod = NULL;
 	}
+
+	pw_properties_free(d->props);
+	pw_properties_free(d->sink_props);
+	pw_properties_free(d->source_props);
 
 	return 0;
 }
@@ -168,7 +176,7 @@ static int module_jackdbus_detect_prepare(struct module * const module)
 	spa_zero(info);
 	if ((res = module_args_to_audioinfo_keys(module->impl, props, NULL, NULL,
 			"sink_channels", "sink_channel_map", &info)) < 0) {
-		return res;
+		goto out;
 	} else {
 		audioinfo_to_properties(&info, sink_props);
 	}
@@ -190,7 +198,7 @@ static int module_jackdbus_detect_prepare(struct module * const module)
 	spa_zero(info);
 	if ((res = module_args_to_audioinfo_keys(module->impl, props, NULL, NULL,
 			"source_channels", "source_channel_map", &info)) < 0) {
-		return res;
+		goto out;
 	} else {
 		audioinfo_to_properties(&info, source_props);
 	}

@@ -27,7 +27,8 @@
 #include <spa/param/audio/format-utils.h>
 #include <spa/param/props.h>
 #include <spa/utils/ringbuffer.h>
-#include <spa/utils/json.h>
+#include <spa/utils/json-builder.h>
+#include <spa/utils/overflow.h>
 
 #include <pipewire/pipewire.h>
 #include <pipewire/extensions/metadata.h>
@@ -57,15 +58,17 @@
 #include "volume.h"
 
 #define DEFAULT_ALLOW_MODULE_LOADING 	"true"
-#define DEFAULT_MIN_REQ		"256/48000"
-#define DEFAULT_DEFAULT_REQ	"960/48000"
-#define DEFAULT_MIN_FRAG	"256/48000"
-#define DEFAULT_DEFAULT_FRAG	"96000/48000"
-#define DEFAULT_DEFAULT_TLENGTH	"96000/48000"
-#define DEFAULT_MIN_QUANTUM	"256/48000"
-#define DEFAULT_FORMAT		"F32"
-#define DEFAULT_POSITION	"[ FL FR ]"
-#define DEFAULT_IDLE_TIMEOUT	"0"
+#define DEFAULT_MIN_REQ			"256/48000"
+#define DEFAULT_DEFAULT_REQ		"960/48000"
+#define DEFAULT_MIN_FRAG		"256/48000"
+#define DEFAULT_DEFAULT_FRAG		"96000/48000"
+#define DEFAULT_DEFAULT_TLENGTH		"96000/48000"
+#define DEFAULT_MIN_QUANTUM		"256/48000"
+#define DEFAULT_FORMAT			"F32"
+#define DEFAULT_POSITION		"[ FL FR ]"
+#define DEFAULT_IDLE_TIMEOUT		"0"
+#define DEFAULT_MAX_STREAMS		"64"
+#define DEFAULT_MAX_SAMPLE_CACHE	"67108864"
 
 #define MAX_FORMATS	32
 /* The max amount of data we send in one block when capturing. In PulseAudio this
@@ -569,7 +572,8 @@ static int reply_create_playback_stream(struct stream *stream, struct pw_manager
 	const char *peer_name;
 	uint64_t lat_usec;
 
-	stream->buffer = calloc(1, MAXLENGTH);
+	stream->bufsize = MAXLENGTH;
+	stream->buffer = calloc(1, stream->bufsize);
 	if (stream->buffer == NULL)
 		return -errno;
 
@@ -583,6 +587,8 @@ static int reply_create_playback_stream(struct stream *stream, struct pw_manager
 			client->name, stream->create_tag, stream->index, missing, lat_usec);
 
 	reply = reply_new(client, stream->create_tag);
+	if (reply == NULL)
+		return -ENOMEM;
 	message_put(reply,
 		TAG_U32, stream->channel,		/* stream index/channel */
 		TAG_U32, stream->index,			/* sink_input/stream index */
@@ -726,7 +732,8 @@ static int reply_create_record_stream(struct stream *stream, struct pw_manager_o
 	uint32_t peer_index;
 	uint64_t lat_usec;
 
-	stream->buffer = calloc(1, MAXLENGTH);
+	stream->bufsize = MAXLENGTH;
+	stream->buffer = calloc(1, stream->bufsize);
 	if (stream->buffer == NULL)
 		return -errno;
 
@@ -739,6 +746,8 @@ static int reply_create_record_stream(struct stream *stream, struct pw_manager_o
 			client->name, stream->create_tag, stream->index, lat_usec);
 
 	reply = reply_new(client, stream->create_tag);
+	if (reply == NULL)
+		return -ENOMEM;
 	message_put(reply,
 		TAG_U32, stream->channel,	/* stream index/channel */
 		TAG_U32, stream->index,		/* source_output/stream index */
@@ -1392,8 +1401,8 @@ do_process_done(struct spa_loop *loop,
 					return -errno;
 
 				spa_ringbuffer_read_data(&stream->ring,
-						stream->buffer, MAXLENGTH,
-						index % MAXLENGTH,
+						stream->buffer, stream->bufsize,
+						index % stream->bufsize,
 						msg->data, towrite);
 
 				client_queue_message(client, msg);
@@ -1465,8 +1474,8 @@ static void stream_process(void *data)
 				if (avail > 0) {
 					avail = SPA_MIN((uint32_t)avail, size);
 					spa_ringbuffer_read_data(&stream->ring,
-						stream->buffer, MAXLENGTH,
-						index % MAXLENGTH,
+						stream->buffer, stream->bufsize,
+						index % stream->bufsize,
 						p, avail);
 					empty = false;
 				}
@@ -1495,8 +1504,8 @@ static void stream_process(void *data)
 			size = SPA_MIN(size, minreq);
 
 			spa_ringbuffer_read_data(&stream->ring,
-					stream->buffer, MAXLENGTH,
-					index % MAXLENGTH,
+					stream->buffer, stream->bufsize,
+					index % stream->bufsize,
 					p, size);
 
 			index += size;
@@ -1532,10 +1541,10 @@ static void stream_process(void *data)
 		}
 
 		spa_ringbuffer_write_data(&stream->ring,
-				stream->buffer, MAXLENGTH,
-				index % MAXLENGTH,
+				stream->buffer, stream->bufsize,
+				index % stream->bufsize,
 				SPA_PTROFF(p, offs, void),
-				SPA_MIN(size, MAXLENGTH));
+				SPA_MIN(size, stream->bufsize));
 
 		index += size;
 		pd.write_inc = size;
@@ -2354,7 +2363,8 @@ static int do_create_upload_stream(struct client *client, uint32_t command, uint
 
 	stream->props = props;
 
-	stream->buffer = calloc(1, MAXLENGTH);
+	stream->bufsize = stream->attr.maxlength;
+	stream->buffer = calloc(1, stream->bufsize);
 	if (stream->buffer == NULL)
 		goto error_errno;
 
@@ -2413,6 +2423,12 @@ static int do_finish_upload_stream(struct client *client, uint32_t command, uint
 			channel, name);
 
 	struct sample *old = find_sample(impl, SPA_ID_INVALID, name);
+	uint32_t new_length = stream->attr.maxlength;
+	uint32_t old_length = old != NULL ? old->length : 0;
+	if (impl->stat.sample_cache + new_length - old_length > impl->defs.max_sample_cache) {
+		res = -ENOSPC;
+		goto error;
+	}
 	if (old == NULL || old->ref > 1) {
 		sample = calloc(1, sizeof(*sample));
 		if (sample == NULL)
@@ -2556,7 +2572,10 @@ static struct pw_manager_object *find_device(struct client *client,
 	if (name != NULL) {
 		if (spa_strendswith(name, ".monitor")) {
 			if (!sink) {
-				name = strndupa(name, strlen(name)-8);
+				size_t len = strlen(name) - 8;
+				if (len > MAX_NAME)
+					return NULL;
+				name = strndupa(name, len);
 				allow_monitor = true;
 			}
 		}
@@ -2700,6 +2719,8 @@ static int do_cork_stream(struct client *client, uint32_t command, uint32_t tag,
 	stream = pw_map_lookup(&client->streams, channel);
 	if (stream == NULL || stream->type == STREAM_TYPE_UPLOAD)
 		return -ENOENT;
+	if (stream->create_tag != SPA_ID_INVALID)
+		return -ENOENT;
 
 	stream_set_corked(stream, cork);
 	if (cork) {
@@ -2729,6 +2750,8 @@ static int do_flush_trigger_prebuf_stream(struct client *client, uint32_t comman
 
 	stream = pw_map_lookup(&client->streams, channel);
 	if (stream == NULL || stream->type == STREAM_TYPE_UPLOAD)
+		return -ENOENT;
+	if (stream->create_tag != SPA_ID_INVALID)
 		return -ENOENT;
 
 	switch (command) {
@@ -3171,7 +3194,8 @@ static int do_set_port_latency_offset(struct client *client, uint32_t command, u
 	if (port_name == NULL)
 		return -EINVAL;
 
-	value = offset * 1000;  /* to nsec */
+	if (spa_overflow_mul(offset, (int64_t)1000, &value))
+		return -EINVAL;
 
 	if ((card = select_object(manager, &sel)) == NULL)
 		return -ENOENT;
@@ -3229,6 +3253,8 @@ static int do_set_stream_name(struct client *client, uint32_t command, uint32_t 
 
 	stream = pw_map_lookup(&client->streams, channel);
 	if (stream == NULL || stream->type == STREAM_TYPE_UPLOAD)
+		return -ENOENT;
+	if (stream->create_tag != SPA_ID_INVALID)
 		return -ENOENT;
 
 	items[0] = SPA_DICT_ITEM_INIT(PW_KEY_MEDIA_NAME, name);
@@ -4587,7 +4613,7 @@ static int do_set_stream_buffer_attr(struct client *client, uint32_t command, ui
 			commands[command].name, tag, channel);
 
 	stream = pw_map_lookup(&client->streams, channel);
-	if (stream == NULL)
+	if (stream == NULL || stream->create_tag != SPA_ID_INVALID)
 		return -ENOENT;
 
 	if (command == COMMAND_SET_PLAYBACK_STREAM_BUFFER_ATTR) {
@@ -4677,6 +4703,11 @@ static int do_update_stream_sample_rate(struct client *client, uint32_t command,
 	stream = pw_map_lookup(&client->streams, channel);
 	if (stream == NULL || stream->type == STREAM_TYPE_UPLOAD)
 		return -ENOENT;
+	if (stream->create_tag != SPA_ID_INVALID)
+		return -ENOENT;
+
+	if (rate == 0 || rate > RATE_MAX)
+		return -EINVAL;
 
 	stream->rate = rate;
 
@@ -4790,13 +4821,30 @@ static int do_set_default(struct client *client, uint32_t command, uint32_t tag,
 			return -ENOENT;
 		if (o->props && (str = pw_properties_get(o->props, PW_KEY_NODE_NAME)) != NULL)
 			name = str;
-		else if (spa_strendswith(name, ".monitor"))
-			name = strndupa(name, strlen(name)-8);
+		else if (spa_strendswith(name, ".monitor")) {
+			size_t len = strlen(name) - 8;
+			if (len > MAX_NAME)
+				return -ENAMETOOLONG;
+			name = strndupa(name, len);
+		}
+
+		struct spa_json_builder b;
+		char *val;
+		size_t val_size;
+
+		if ((res = spa_json_builder_memstream(&b, &val, &val_size, 0)) < 0)
+			return res;
+
+		spa_json_builder_array_push(&b, "{");
+		spa_json_builder_object_string(&b, "name", name);
+		spa_json_builder_pop(&b,        "}");
+		spa_json_builder_close(&b);
 
 		res = pw_manager_set_metadata(manager, client->metadata_default,
 				PW_ID_CORE,
 				sink ? METADATA_CONFIG_DEFAULT_SINK : METADATA_CONFIG_DEFAULT_SOURCE,
-				"Spa:String:JSON", "{ \"name\": \"%s\" }", name);
+				"Spa:String:JSON", "%s", val);
+		free(val);
 	} else {
 		res = pw_manager_set_metadata(manager, client->metadata_default,
 				PW_ID_CORE,
@@ -5151,13 +5199,15 @@ static int do_load_module(struct client *client, uint32_t command, uint32_t tag,
 	pw_log_info("[%s] %s name:%s argument:%s",
 			client->name, commands[command].name, name, argument);
 
-	module = module_create(impl, name, argument);
-	if (module == NULL)
-		return -errno;
-
 	pm = calloc(1, sizeof(*pm));
 	if (pm == NULL)
 		return -errno;
+
+	module = module_create(impl, name, argument);
+	if (module == NULL) {
+		free(pm);
+		return -errno;
+	}
 
 	pm->tag = tag;
 	pm->client = client;
@@ -5605,6 +5655,8 @@ static void load_defaults(struct defs *def, struct pw_properties *props)
 	parse_format(props, "pulse.default.format", DEFAULT_FORMAT, &def->sample_spec);
 	parse_position(props, "pulse.default.position", DEFAULT_POSITION, &def->channel_map);
 	parse_uint32(props, "pulse.idle.timeout", DEFAULT_IDLE_TIMEOUT, &def->idle_timeout);
+	parse_uint32(props, "pulse.max-streams", DEFAULT_MAX_STREAMS, &def->max_streams);
+	parse_uint32(props, "pulse.max-sample-cache", DEFAULT_MAX_SAMPLE_CACHE, &def->max_sample_cache);
 	def->sample_spec.channels = def->channel_map.channels;
 	def->quantum_limit = 8192;
 }

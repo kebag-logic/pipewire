@@ -76,6 +76,8 @@
  *     #pulse.default.format   = F32
  *     #pulse.default.position = [ FL FR ]
  *     #pulse.idle.timeout     = 0
+ *     #pulse.max-streams      = 64
+ *     #pulse.max-sample-cache   = 67108864
  * }
  *
  * pulse.properties.rules = [
@@ -246,6 +248,19 @@
  * for the given amount of seconds. This makes sure that sinks can suspend and
  * save battery power. When the client resumes, it will unpause again.
  * A value of 0 disables this feature.
+ *
+ *\code{.unparsed}
+ *     pulse.max-streams = 64
+ *\endcode
+ *
+ * The maximum number of streams a single client can create. Default is 64.
+ *
+ *\code{.unparsed}
+ *     pulse.max-sample-cache = 67108864
+ *\endcode
+ *
+ * The maximum total size in bytes of all sample cache entries. Default is
+ * 67108864 (64MB).
  *
  * ## Command execution
  *

@@ -18,7 +18,7 @@
 #include <spa/utils/cleanup.h>
 #include <spa/utils/hook.h>
 #include <spa/utils/result.h>
-#include <spa/utils/json.h>
+#include <spa/utils/json-builder.h>
 #include <spa/debug/types.h>
 
 #include <pipewire/pipewire.h>
@@ -1191,15 +1191,19 @@ static struct session *session_new_announce(struct impl *impl, struct node *node
 	replace_str(&sdp->mime_type, str);
 
 	if ((str = pw_properties_get(props, "rtp.rate")) != NULL)
-		sdp->rate = atoi(str);
+		if (!spa_atou32(str, &sdp->rate, 0))
+			sdp->rate = 0;
 	if ((str = pw_properties_get(props, "rtp.channels")) != NULL)
-		sdp->channels = atoi(str);
-	if ((str = pw_properties_get(props, "rtp.ssrc")) != NULL)
-		sdp->ssrc = atoi(str);
-	else
+		if (!spa_atou32(str, &sdp->channels, 0))
+			sdp->channels = 0;
+	if ((str = pw_properties_get(props, "rtp.ssrc")) != NULL) {
+		if (!spa_atou32(str, &sdp->ssrc, 0))
+			sdp->ssrc = 0;
+	} else
 		sdp->ssrc = 0;
 	if ((str = pw_properties_get(props, "rtp.ts-offset")) != NULL)
-		sdp->ts_offset = atoi(str);
+		if (!spa_atou32(str, &sdp->ts_offset, 0))
+			sdp->ts_offset = 0;
 	str = pw_properties_get(props, "rtp.ts-refclk");
 	replace_str(&sdp->ts_refclk, str);
 
@@ -1265,37 +1269,34 @@ static int session_load_source(struct session *session, struct pw_properties *pr
 {
 	struct impl *impl = session->impl;
 	struct pw_context *context = pw_impl_module_get_context(impl->module);
-	FILE *f = NULL;
+	struct spa_json_builder b;
 	char *args = NULL;
 	size_t size;
 	const char *str, *media;
 	int res;
 
-	if ((f = open_memstream(&args, &size)) == NULL) {
-		res = -errno;
+	if ((res = spa_json_builder_memstream(&b, &args, &size, 0)) < 0) {
 		pw_log_error("Can't open memstream: %m");
-		goto done;
+		return res;
 	}
-	fprintf(f, "{");
+	spa_json_builder_array_push(&b, "{");
 
 	if ((str = pw_properties_get(props, "rtp.destination.ip")) != NULL)
-		fprintf(f, "\"source.ip\" = \"%s\", ", str);
+		spa_json_builder_object_string(&b, "source.ip", str);
 	if ((str = pw_properties_get(props, "rtp.destination.port")) != NULL)
-		fprintf(f, "\"source.port\" = %s, ", str);
+		spa_json_builder_object_value(&b, false, "source.port", str);
 	if ((str = pw_properties_get(props, "rtp.session")) != NULL)
-		fprintf(f, "\"sess.name\" = \"%s\", ", str);
+		spa_json_builder_object_string(&b, "sess.name", str);
 
 	/* Use an interface if explicitly specified, else use the SAP interface if that was specified */
-	if ((str = pw_properties_get(props, "local.ifname")) != NULL || (str = impl->ifname) != NULL) {
-		fprintf(f, "\"local.ifname\" = \"%s\", ", str);
-	}
+	if ((str = pw_properties_get(props, "local.ifname")) != NULL || (str = impl->ifname) != NULL)
+		spa_json_builder_object_string(&b, "local.ifname", str);
 
 	if ((media = pw_properties_get(props, "sess.media")) == NULL)
 		media = "audio";
 
-	if ((str = pw_properties_get(props, "cleanup.sec")) != NULL) {
-		fprintf(f, "\"cleanup.sec\" = \"%s\", ", str);
-	}
+	if ((str = pw_properties_get(props, "cleanup.sec")) != NULL)
+		spa_json_builder_object_string(&b, "cleanup.sec", str);
 
 	if (spa_streq(media, "audio")) {
 		const char *mime;
@@ -1304,15 +1305,16 @@ static int session_load_source(struct session *session, struct pw_properties *pr
 		if ((mime = pw_properties_get(props, "rtp.mime")) == NULL) {
 			pw_log_error("missing rtp.mime property");
 			res = -EINVAL;
-			goto done;
+			goto error;
 		}
 		format_info = find_audio_format_info(mime);
 		if (format_info == NULL) {
 			pw_log_error("unknown rtp.mime type %s", mime);
 			res = -ENOTSUP;
-			goto done;
+			goto error;
 		}
-		fprintf(f, "\"sess.media\" = \"%s\", ", format_info->media_type);
+		spa_json_builder_object_string(&b, "sess.media", format_info->media_type);
+
 		if (format_info->format_str != NULL) {
 			pw_properties_set(props, "audio.format", format_info->format_str);
 			if ((str = pw_properties_get(props, "rtp.rate")) != NULL)
@@ -1321,41 +1323,40 @@ static int session_load_source(struct session *session, struct pw_properties *pr
 				pw_properties_set(props, "audio.channels", str);
 		}
 		if ((str = pw_properties_get(props, "rtp.ssrc")) != NULL)
-			fprintf(f, "\"rtp.receiver-ssrc\" = \"%s\", ", str);
+			spa_json_builder_object_string(&b, "rtp.receiver-ssrc", str);
 	} else {
 		pw_log_error("Unhandled media %s", media);
 		res = -EINVAL;
-		goto done;
+		goto error;
 	}
 	if ((str = pw_properties_get(props, "rtp.ts-offset")) != NULL)
-		fprintf(f, "\"sess.ts-offset\" = %s, ", str);
+		spa_json_builder_object_value(&b, false, "sess.ts-offset", str);
 
-	fprintf(f, " stream.props = {");
-	pw_properties_serialize_dict(f, &props->dict, 0);
-	fprintf(f, " }");
-	fprintf(f, "}");
-        fclose(f);
-	f = NULL;
+	spa_json_builder_object_push(&b, "stream.props", "{");
+	pw_properties_serialize_dict(b.f, &props->dict, 0);
+	spa_json_builder_pop(&b,         "}");
+	spa_json_builder_pop(&b,       "}");
+	spa_json_builder_close(&b);
 
 	pw_log_info("loading new RTP source");
 	session->module = pw_context_load_module(context,
 				"libpipewire-module-rtp-source",
 				args, NULL);
 
+	free(args);
+
 	if (session->module == NULL) {
-		res = -errno;
 		pw_log_error("Can't load module: %m");
-		goto done;
+		return -errno;
 	}
 
 	pw_impl_module_add_listener(session->module,
 			&session->module_listener,
 			&session_module_events, session);
 
-	res = 0;
-done:
-	if (f != NULL)
-		fclose(f);
+	return 0;
+error:
+	spa_json_builder_close(&b);
 	free(args);
 	return res;
 }
@@ -1544,21 +1545,19 @@ static int parse_sdp_m(struct impl *impl, char *c, struct sdp_info *info)
  * This is Audinate format. TODO: parse RAVENNA `i=CH1,CH2,CH3` format */
 static int parse_sdp_i(struct impl *impl, char *c, struct sdp_info *info)
 {
-	if (!strstr(c, " channels: ")) {
+	char *chstr;
+	uint32_t channels;
+
+	chstr = strstr(c, " channels: ");
+	if (chstr == NULL)
 		return 0;
-	}
 
 	c += strlen("i=");
-	c[strcspn(c, " ")] = '\0';
-
-	uint32_t channels;
 	if (sscanf(c, "%u", &channels) != 1 || channels <= 0 || channels > MAX_CHANNELS)
 		return 0;
 
-	c += strcspn(c, "\0");
-	c += strlen(" channels: ");
-
-	strncpy(info->channelmap, c, sizeof(info->channelmap) - 1);
+	chstr += strlen(" channels: ");
+	strncpy(info->channelmap, chstr, sizeof(info->channelmap) - 1);
 
 	return 0;
 }
@@ -1874,7 +1873,7 @@ finish:
 	return res;
 
 error:
-	if (fd > 0)
+	if (fd >= 0)
 		close(fd);
 	goto finish;
 }

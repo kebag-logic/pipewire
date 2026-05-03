@@ -21,7 +21,7 @@
 
 #include <spa/utils/result.h>
 #include <spa/utils/string.h>
-#include <spa/utils/json.h>
+#include <spa/utils/json-builder.h>
 #include <spa/param/audio/format.h>
 #include <spa/param/audio/raw-json.h>
 #include <spa/debug/types.h>
@@ -323,12 +323,16 @@ static int handle_connect(struct tunnel *t, int fd)
 
 	str = spa_aprintf("{\"id\":%u,\"jsonrpc\": \"2.0\",\"method\":\"Server.GetRPCVersion\"}\r\n",
 			impl->id++);
+	if (str == NULL)
+		return -errno;
 	res = write(t->source->fd, str, strlen(str));
 	pw_log_info("wrote %s: %d", str, res);
 	free(str);
 
 	str = spa_aprintf("{\"id\":%u,\"jsonrpc\":\"2.0\",\"method\":\"Stream.RemoveStream\","
 			"\"params\":{\"id\":\"%s\"}}\r\n", impl->id++, t->stream_name);
+	if (str == NULL)
+		return -errno;
 	res = write(t->source->fd, str, strlen(str));
 	pw_log_info("wrote %s: %d", str, res);
 	free(str);
@@ -338,6 +342,8 @@ static int handle_connect(struct tunnel *t, int fd)
 		"sampleformat=%d:%d:%d&codec=pcm&chunk_ms=20\"}}\r\n", impl->id++,
 		t->server_address, t->stream_name, t->audio_info.rate,
 		get_bps(t->audio_info.format), t->audio_info.channels);
+	if (str == NULL)
+		return -errno;
 	res = write(t->source->fd, str, strlen(str));
 	pw_log_info("wrote %s: %d", str, res);
 	free(str);
@@ -351,7 +357,7 @@ static int process_input(struct tunnel *t)
 	int res = 0;
 
 	while (true) {
-		res = read(t->source->fd, buffer, sizeof(buffer));
+		res = read(t->source->fd, buffer, sizeof(buffer) - 1);
 		if (res == 0)
 			return -EPIPE;
 		if (res < 0) {
@@ -362,6 +368,7 @@ static int process_input(struct tunnel *t)
 				return res;
 			break;
 		}
+		buffer[res] = '\0';
 	}
 
 	pw_log_info("received: %s", buffer);
@@ -523,7 +530,7 @@ static int parse_audio_info(struct pw_properties *props, struct spa_audio_info_r
 static int create_stream(struct impl *impl, struct pw_properties *props,
 		struct tunnel *t)
 {
-	FILE *f;
+	struct spa_json_builder b;
 	char *args;
 	size_t size;
 	int res = 0;
@@ -548,16 +555,15 @@ static int create_stream(struct impl *impl, struct pw_properties *props,
 		goto done;
 	}
 
-	if ((f = open_memstream(&args, &size)) == NULL) {
-		res = -errno;
+	if ((res = spa_json_builder_memstream(&b, &args, &size, 0)) < 0) {
 		pw_log_error("Can't open memstream: %m");
 		goto done;
 	}
 
-	fprintf(f, "{");
-	pw_properties_serialize_dict(f, &props->dict, 0);
-	fprintf(f, "}");
-        fclose(f);
+	spa_json_builder_array_push(&b, "{");
+	pw_properties_serialize_dict(b.f, &props->dict, 0);
+	spa_json_builder_pop(&b,        "}");
+	spa_json_builder_close(&b);
 
 	pw_log_info("loading module args:'%s'", args);
 	mod = pw_context_load_module(impl->context,

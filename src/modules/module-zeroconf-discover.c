@@ -14,7 +14,7 @@
 
 #include <spa/utils/result.h>
 #include <spa/utils/string.h>
-#include <spa/utils/json.h>
+#include <spa/utils/json-builder.h>
 #include <spa/param/audio/format-utils.h>
 
 #include <pipewire/impl.h>
@@ -100,6 +100,8 @@ struct tunnel {
 	struct spa_hook module_listener;
 };
 
+static void tunnel_free(struct tunnel *t);
+
 static struct tunnel *tunnel_new(struct impl *impl, const struct tunnel_info *info)
 {
 	struct tunnel *t;
@@ -112,6 +114,11 @@ static struct tunnel *tunnel_new(struct impl *impl, const struct tunnel_info *in
 	t->info.mode = strdup(info->mode);
 	spa_list_append(&impl->tunnel_list, &t->link);
 
+	if (t->info.name == NULL || t->info.mode == NULL) {
+		tunnel_free(t);
+		errno = ENOMEM;
+		return NULL;
+	}
 	return t;
 }
 
@@ -233,7 +240,7 @@ static void on_zeroconf_added(void *data, const void *user_data, const struct sp
 	struct tunnel *t;
 	struct tunnel_info tinfo;
 	const struct spa_dict_item *it;
-	FILE *f;
+	struct spa_json_builder b;
 	char *args;
 	size_t size;
 	struct pw_impl_module *mod;
@@ -241,6 +248,8 @@ static void on_zeroconf_added(void *data, const void *user_data, const struct sp
 
 	name = spa_dict_lookup(info, PW_KEY_ZEROCONF_NAME);
 	type = spa_dict_lookup(info, PW_KEY_ZEROCONF_TYPE);
+	if (name == NULL || type == NULL)
+		goto done;
 	mode = strstr(type, "sink") ? "sink" : "source";
 
 	tinfo = TUNNEL_INFO(.name = name, .mode = mode);
@@ -267,6 +276,8 @@ static void on_zeroconf_added(void *data, const void *user_data, const struct sp
 		pw_properties_from_zeroconf(it->key, it->value, props);
 
 	host_name = spa_dict_lookup(info, PW_KEY_ZEROCONF_HOSTNAME);
+	if (host_name == NULL)
+		host_name = "unknown";
 
 	if ((device = pw_properties_get(props, PW_KEY_TARGET_OBJECT)) != NULL)
 		pw_properties_setf(props, PW_KEY_NODE_NAME,
@@ -277,9 +288,14 @@ static void on_zeroconf_added(void *data, const void *user_data, const struct sp
 
 	pw_properties_set(props, "tunnel.mode", mode);
 
-	pw_properties_setf(props, "pulse.server.address", " [%s]:%s",
-			spa_dict_lookup(info, PW_KEY_ZEROCONF_ADDRESS),
-			spa_dict_lookup(info, PW_KEY_ZEROCONF_PORT));
+	{
+		const char *address = spa_dict_lookup(info, PW_KEY_ZEROCONF_ADDRESS);
+		const char *port = spa_dict_lookup(info, PW_KEY_ZEROCONF_PORT);
+		if (address == NULL || port == NULL)
+			goto done;
+		pw_properties_setf(props, "pulse.server.address", " [%s]:%s",
+				address, port);
+	}
 
 	desc = pw_properties_get(props, "tunnel.remote.description");
 	if (desc == NULL)
@@ -309,17 +325,17 @@ static void on_zeroconf_added(void *data, const void *user_data, const struct sp
 	if ((str = pw_properties_get(impl->properties, "pulse.latency")) != NULL)
 		pw_properties_set(props, "pulse.latency", str);
 
-	if ((f = open_memstream(&args, &size)) == NULL) {
+	if (spa_json_builder_memstream(&b, &args, &size, 0) < 0) {
 		pw_log_error("Can't open memstream: %m");
 		goto done;
 	}
 
-	fprintf(f, "{");
-	pw_properties_serialize_dict(f, &props->dict, 0);
-	fprintf(f, " stream.props = {");
-	fprintf(f, " }");
-	fprintf(f, "}");
-        fclose(f);
+	spa_json_builder_array_push(&b, "{");
+	pw_properties_serialize_dict(b.f, &props->dict, 0);
+	spa_json_builder_object_push(&b,  "stream.props", "{");
+	spa_json_builder_pop(&b,          "}");
+	spa_json_builder_pop(&b,        "}");
+	spa_json_builder_close(&b);
 
 	pw_log_info("loading module args:'%s'", args);
 	mod = pw_context_load_module(impl->context,
@@ -349,6 +365,8 @@ static void on_zeroconf_removed(void *data, const void *user, const struct spa_d
 
 	name = spa_dict_lookup(info, PW_KEY_ZEROCONF_NAME);
 	type = spa_dict_lookup(info, PW_KEY_ZEROCONF_TYPE);
+	if (name == NULL || type == NULL)
+		return;
 	mode = strstr(type, "sink") ? "sink" : "source";
 
 	tinfo = TUNNEL_INFO(.name = name, .mode = mode);

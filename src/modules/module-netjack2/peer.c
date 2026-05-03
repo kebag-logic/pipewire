@@ -173,7 +173,7 @@ static int netjack2_init(struct netjack2_peer *peer)
 			goto error_errno;
 		}
 		peer->max_encoded_size = ((uint64_t)peer->params.kbps * peer->params.period_size * 1024) /
-			(peer->params.sample_rate * 8) + sizeof(uint16_t);
+			((uint64_t)peer->params.sample_rate * 8) + sizeof(uint16_t);
 		if (spa_overflow_mul(peer->max_encoded_size, max_audio_ch, &peer->encoded_size)) {
 			errno = EINVAL;
 			goto error_errno;
@@ -365,26 +365,35 @@ static inline void netjack2_to_midi(float *dst, uint32_t size, struct nj2_midi_b
 	struct spa_pod_builder b = { 0, };
 	uint32_t i;
 	struct spa_pod_frame f;
-	size_t offset = size - buf->write_pos - sizeof(*buf) -
-			(buf->event_count * sizeof(struct nj2_midi_event));
+	size_t used = sizeof(*buf) +
+			(buf->event_count * sizeof(struct nj2_midi_event)) +
+			buf->write_pos;
 
 	spa_pod_builder_init(&b, dst, size);
 	spa_pod_builder_push_sequence(&b, &f, 0);
+
+	if (used > size)
+		goto done;
+
+	size_t offset = size - used;
 
 	for (i = 0; i < buf->event_count; i++) {
 		struct nj2_midi_event *ev = &buf->event[i];
 		uint8_t *data;
 
-		if (ev->size <= MIDI_INLINE_MAX)
+		if (ev->size <= MIDI_INLINE_MAX) {
 			data = ev->buffer;
-		else if (ev->offset > offset)
+		} else if (ev->offset > offset &&
+			   ev->offset - offset + ev->size <= used) {
 			data = SPA_PTROFF(buf, ev->offset - offset, void);
-		else
+		} else {
 			continue;
+		}
 
 		spa_pod_builder_control(&b, ev->time, SPA_CONTROL_Midi);
                 spa_pod_builder_bytes(&b, data, ev->size);
 	}
+done:
 	spa_pod_builder_pop(&b, &f);
 }
 
@@ -500,9 +509,14 @@ static int netjack2_send_float(struct netjack2_peer *peer, uint32_t nframes,
 		sub_period_size = nframes;
 	} else {
 		uint32_t max_size = PACKET_AVAILABLE_SIZE(peer->params.mtu);
-		uint32_t period = (uint32_t) powf(2.f, (uint32_t) (logf((float)max_size /
-				(active_ports * sizeof(float))) / logf(2.f)));
-		sub_period_size = SPA_MIN(period, nframes);
+		uint32_t overhead = active_ports * sizeof(int32_t);
+		if (max_size <= overhead) {
+			sub_period_size = 1;
+		} else {
+			uint32_t period = (uint32_t) powf(2.f, (uint32_t) (logf((float)(max_size - overhead) /
+					(active_ports * sizeof(float))) / logf(2.f)));
+			sub_period_size = SPA_CLAMP(period, 1u, nframes);
+		}
 	}
 	sub_period_bytes = sub_period_size * sizeof(float) + sizeof(int32_t);
 	num_packets = nframes / sub_period_size;
@@ -702,10 +716,13 @@ static int netjack2_send_data(struct netjack2_peer *peer, uint32_t nframes,
 	return 0;
 }
 
+#define MAX_RECV_PACKETS 1024
+
 static inline int32_t netjack2_driver_sync_wait(struct netjack2_peer *peer)
 {
 	struct nj2_packet_header sync;
 	ssize_t len;
+	uint32_t tries = 0;
 
 	while (true) {
 		if ((len = recv(peer->fd, &sync, sizeof(sync), 0)) < 0)
@@ -720,11 +737,16 @@ static inline int32_t netjack2_driver_sync_wait(struct netjack2_peer *peer)
 			    ntohl(sync.id) == peer->params.id)
 				break;
 		}
+		if (++tries > MAX_RECV_PACKETS) {
+			pw_log_warn("too many packets in sync wait, aborting");
+			return -ENOENT;
+		}
 	}
 	peer->sync.is_last = ntohl(sync.is_last);
 	peer->sync.frames = ntohl(sync.frames);
 	if (peer->sync.frames == -1)
 		peer->sync.frames = peer->params.period_size;
+	peer->sync.frames = SPA_MIN(peer->sync.frames, (int32_t)peer->quantum_limit);
 
 	return peer->sync.frames;
 
@@ -738,6 +760,7 @@ static inline int32_t netjack2_manager_sync_wait(struct netjack2_peer *peer)
 	struct nj2_packet_header sync;
 	ssize_t len;
 	int32_t offset;
+	uint32_t tries = 0;
 
 	while (true) {
 		if ((len = recv(peer->fd, &sync, sizeof(sync), MSG_PEEK)) < 0)
@@ -754,12 +777,17 @@ static inline int32_t netjack2_manager_sync_wait(struct netjack2_peer *peer)
 		}
 		if ((len = recv(peer->fd, &sync, sizeof(sync), 0)) < 0)
 			goto receive_error;
+		if (++tries > MAX_RECV_PACKETS) {
+			pw_log_warn("too many packets in sync wait, aborting");
+			return -ENOENT;
+		}
 	}
 	peer->sync.cycle = ntohl(sync.cycle);
 	peer->sync.is_last = ntohl(sync.is_last);
 	peer->sync.frames = ntohl(sync.frames);
 	if (peer->sync.frames == -1)
 		peer->sync.frames = peer->params.period_size;
+	peer->sync.frames = SPA_MIN(peer->sync.frames, (int32_t)peer->quantum_limit);
 
 	offset = peer->cycle - peer->sync.cycle;
 	if (offset < (int32_t)peer->params.network_latency) {
@@ -850,17 +878,23 @@ static int netjack2_recv_float(struct netjack2_peer *peer, struct nj2_packet_hea
 	if (active_ports == 0 || active_ports > MAX_CHANNELS)
 		return 0;
 
+	uint32_t nframes = peer->sync.frames;
 	uint32_t max_size = PACKET_AVAILABLE_SIZE(peer->params.mtu);
-	uint32_t period = (uint32_t) powf(2.f, (uint32_t) (logf((float)max_size /
-			(active_ports * sizeof(float))) / logf(2.f)));
-	sub_period_size = SPA_MIN(period, (uint32_t)peer->sync.frames);
+	uint32_t overhead = active_ports * sizeof(int32_t);
+	if (max_size <= overhead) {
+		sub_period_size = 1;
+	} else {
+		uint32_t period = (uint32_t) powf(2.f, (uint32_t) (logf((float)(max_size - overhead) /
+				(active_ports * sizeof(float))) / logf(2.f)));
+		sub_period_size = SPA_CLAMP(period, 1u, nframes);
+	}
 	sub_period_bytes = sub_period_size * sizeof(float) + sizeof(int32_t);
 
 	if ((size_t)len < (size_t)active_ports * sub_period_bytes + sizeof(*header))
 		return 0;
 
 	sub_cycle = ntohl(header->sub_cycle);
-	if (sub_period_size == 0 || sub_cycle > peer->quantum_limit / sub_period_size)
+	if (sub_cycle >= nframes / sub_period_size)
 		return 0;
 
 	for (i = 0; i < active_ports; i++) {
@@ -947,14 +981,18 @@ static int netjack2_recv_opus(struct netjack2_peer *peer, struct nj2_packet_head
 
 	for (i = 0; i < active_ports; i++) {
 		uint16_t *ap = SPA_PTROFF(encoded_data, i * max_encoded, uint16_t);
+		uint16_t encoded_len = ntohs(ap[0]);
 		void *pcm;
 		int res;
 
 		if (i >= n_info || (pcm = info[i].data) == NULL)
 			continue;
 
+		if (encoded_len > max_encoded - sizeof(uint16_t))
+			continue;
+
 		res = opus_custom_decode_float(peer->opus_dec[i],
-				(unsigned char*)&ap[1], ntohs(ap[0]),
+				(unsigned char*)&ap[1], encoded_len,
 				pcm, peer->sync.frames);
 
 		if (res < 0 || res > 0xffff || res != peer->sync.frames)
@@ -1046,10 +1084,15 @@ static int netjack2_recv_data(struct netjack2_peer *peer,
 		struct data_info *audio, uint32_t n_audio)
 {
 	ssize_t len;
-	uint32_t i, audio_count = 0, midi_count = 0;
+	uint32_t i, audio_count = 0, midi_count = 0, packet_count = 0;
 	struct nj2_packet_header header;
 
 	while (!peer->sync.is_last) {
+		if (++packet_count > MAX_RECV_PACKETS) {
+			pw_log_warn("too many packets in cycle (%u), aborting",
+					MAX_RECV_PACKETS);
+			break;
+		}
 		if ((len = recv(peer->fd, &header, sizeof(header), MSG_PEEK)) < 0)
 			goto receive_error;
 

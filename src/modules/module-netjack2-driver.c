@@ -676,11 +676,11 @@ on_data_io(void *data, int fd, uint32_t mask)
 	}
 	if (mask & SPA_IO_IN) {
 		bool source_running, sink_running;
-		uint32_t nframes;
+		int32_t nframes;
 		uint64_t nsec;
 
 		nframes = netjack2_driver_sync_wait(&impl->peer);
-		if (nframes == 0)
+		if (nframes <= 0)
 			return;
 
 		nsec = get_time_nsec(impl);
@@ -923,7 +923,10 @@ static int handle_follower_setup(struct impl *impl, struct nj2_session_params *p
 	peer->send_volume = &impl->sink.volume;
 	peer->recv_volume = &impl->source.volume;
 	peer->quantum_limit = impl->quantum_limit;
-	netjack2_init(peer);
+	if ((res = netjack2_init(peer)) < 0) {
+		pw_log_error("can't init peer: %s", spa_strerror(res));
+		return res;
+	}
 
 	int bufsize = SPA_MIN((size_t)NETWORK_MAX_LATENCY * (peer->params.mtu +
 		(size_t)peer->params.period_size * sizeof(float) *

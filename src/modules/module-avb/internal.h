@@ -14,6 +14,7 @@ extern "C" {
 #endif
 
 struct server;
+struct avb_gptp;
 struct avb_mrp;
 
 #define AVB_TSN_ETH 0x22f0
@@ -60,6 +61,8 @@ struct server_events {
 	void (*periodic) (void *data, uint64_t now);
 
 	int (*command) (void *data, uint64_t now, const char *command, const char *args, FILE *out);
+
+	void (*gm_changed) (void *data, uint64_t now, uint8_t gm_id[8]);
 };
 
 struct descriptor {
@@ -114,6 +117,7 @@ struct server {
 
 	unsigned debug_messages:1;
 
+	struct avb_gptp *gptp;
 	struct avb_mrp *mrp;
 	struct avb_mmrp *mmrp;
 	struct avb_mvrp *mvrp;

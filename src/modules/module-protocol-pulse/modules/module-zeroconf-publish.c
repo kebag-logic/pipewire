@@ -72,6 +72,8 @@ struct module_zeroconf_publish_data {
 	struct pw_zeroconf *zeroconf;
 	struct spa_hook zeroconf_listener;
 
+	unsigned int impl_listening:1;
+
 	/* lists of services */
 	struct spa_list pending;
 	struct spa_list published;
@@ -241,6 +243,8 @@ static void fill_service_data(struct module_zeroconf_publish_data *d, struct ser
 	s->cm = dev_info.map;
 
 	s->props = pw_properties_new(NULL, NULL);
+	if (s->props == NULL)
+		return;
 
 	txt_record_server_data(s->userdata->manager->info, s->props);
 
@@ -296,6 +300,11 @@ static struct service *create_service(struct module_zeroconf_publish_data *d, st
 	spa_list_append(&d->pending, &s->link);
 
 	fill_service_data(d, s, o);
+
+	if (s->props == NULL) {
+		spa_list_remove(&s->link);
+		return NULL;
+	}
 
 	pw_log_debug("service %p: created for object %p", s, o);
 
@@ -473,6 +482,7 @@ static int module_zeroconf_publish_load(struct module *module)
 			&zeroconf_events, data);
 
 	impl_add_listener(module->impl, &data->impl_listener, &impl_events, data);
+	data->impl_listening = true;
 
 	return 0;
 }
@@ -482,7 +492,10 @@ static int module_zeroconf_publish_unload(struct module *module)
 	struct module_zeroconf_publish_data *d = module->user_data;
 	struct service *s;
 
-	spa_hook_remove(&d->impl_listener);
+	if (d->impl_listening) {
+		spa_hook_remove(&d->impl_listener);
+		d->impl_listening = false;
+	}
 
 	unpublish_all_services(d);
 

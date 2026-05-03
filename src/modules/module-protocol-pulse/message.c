@@ -145,7 +145,7 @@ static int read_arbitrary(struct message *m, const void **val, size_t *length)
 	int res;
 	if ((res = read_u32(m, &len)) < 0)
 		return res;
-	if (m->offset + len > m->length)
+	if (m->offset > m->length || len > m->length - m->offset)
 		return -ENOSPC;
 	*val = m->data + m->offset;
 	m->offset += len;
@@ -215,7 +215,7 @@ static int read_cvolume(struct message *m, struct volume *vol)
 
 	if ((res = read_u8(m, &vol->channels)) < 0)
 		return res;
-	if (vol->channels > CHANNELS_MAX)
+	if (vol->channels == 0 || vol->channels > CHANNELS_MAX)
 		return -EINVAL;
 	for (i = 0; i < vol->channels; i ++) {
 		if ((res = read_volume(m, &vol->values[i])) < 0)
@@ -361,6 +361,8 @@ int message_get(struct message *m, ...)
 			if ((res = read_format_info(m, va_arg(va, struct format_info*))) < 0)
 				goto done;
 			break;
+		default:
+			goto invalid;
 		}
 	}
 	res = 0;
@@ -788,8 +790,10 @@ int message_dump(enum spa_log_level level, const char *prefix, struct message *m
 		}
 		case TAG_PROPLIST:
 		{
-			struct pw_properties *props = pw_properties_new(NULL, NULL);
 			const struct spa_dict_item *it;
+			struct pw_properties *props = pw_properties_new(NULL, NULL);
+			if (props == NULL)
+				return -errno;
 			res = read_props(m, props, false);
 			if (res >= 0) {
 				pw_log(level, "%s %u: props: n_items:%u", prefix, o, props->dict.n_items);

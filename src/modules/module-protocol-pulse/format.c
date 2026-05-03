@@ -8,7 +8,7 @@
 #include <spa/param/audio/format-utils.h>
 #include <spa/param/audio/raw.h>
 #include <spa/param/audio/raw-json.h>
-#include <spa/utils/json.h>
+#include <spa/utils/json-builder.h>
 
 #include "format.h"
 
@@ -633,11 +633,11 @@ const struct spa_pod *format_build_param(struct spa_pod_builder *b, uint32_t id,
 			SPA_FORMAT_AUDIO_channels,      SPA_POD_Int(spec->channels), 0);
 
 		if (map && map->channels == spec->channels) {
-			uint32_t positions[spec->channels];
-			channel_map_to_positions(map, positions, spec->channels);
+			uint32_t positions[map->channels];
+			channel_map_to_positions(map, positions, map->channels);
                         spa_pod_builder_add(b, SPA_FORMAT_AUDIO_position,
                                 SPA_POD_Array(sizeof(uint32_t), SPA_TYPE_Id,
-                                        spec->channels, positions), 0);
+                                        map->channels, positions), 0);
                 }
         }
         return spa_pod_builder_pop(b, &f);
@@ -703,18 +703,19 @@ static int add_int(struct format_info *info, const char *k, struct spa_pod *para
 		break;
 	case SPA_CHOICE_Enum:
 	{
+		struct spa_json_builder b;
 		char *ptr;
 		size_t size;
-		FILE *f;
+		int res;
 
-		if ((f = open_memstream(&ptr, &size)) == NULL)
-			return -errno;
+		if ((res = spa_json_builder_memstream(&b, &ptr, &size, 0)) < 0)
+			return res;
 
-		fprintf(f, "[");
+		spa_json_builder_array_push(&b, "[");
 		for (i = 1; i < n_values; i++)
-			fprintf(f, "%s %d", i == 1 ? "" : ",", values[i]);
-		fprintf(f, " ]");
-		fclose(f);
+			spa_json_builder_array_int(&b, values[i]);
+		spa_json_builder_pop(&b, "]");
+		spa_json_builder_close(&b);
 
 		pw_properties_set(info->props, k, ptr);
 		free(ptr);
@@ -750,16 +751,17 @@ static int format_info_iec958_from_param(struct format_info *info, struct spa_po
 	if (val->type != SPA_TYPE_Id)
 		return -ENOTSUP;
 
-	if (index >= n_values)
-		return -ENOENT;
-
 	values = SPA_POD_BODY(val);
 
 	switch (choice) {
 	case SPA_CHOICE_None:
+		if (index >= n_values)
+			return -ENOENT;
 		info->encoding = format_encoding_from_id(values[index]);
 		break;
 	case SPA_CHOICE_Enum:
+		if (index + 1 >= n_values)
+			return -ENOENT;
 		info->encoding = format_encoding_from_id(values[index+1]);
 		break;
 	default:
@@ -879,6 +881,8 @@ int format_info_to_spec(const struct format_info *info, struct sample_spec *ss,
 			return -EINVAL;
 		while ((*str == '\"' || *str == ',') &&
 		    (len = strcspn(++str, "\",")) > 0) {
+			if (map->channels >= CHANNELS_MAX)
+				return -EINVAL;
 			map->map[map->channels++] = channel_paname2id(str, len);
 			str += len;
 		}
