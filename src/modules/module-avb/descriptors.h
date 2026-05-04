@@ -16,9 +16,7 @@
 #include "internal.h"
 #include "descriptor-field-value-types.h"
 #include "entity_model.h"
-#include "entity_parser.h"
-	struct spa_dict *props_diVct;
-	struct char *entity_dict = spa_dict_lookup_item(props_dict, "avb.properties.entity_model");
+#include "entity-parser.h"
 
 static inline void init_descriptors(struct server *server)
 {
@@ -51,10 +49,39 @@ static inline void init_descriptors(struct server *server)
 	/**************************************************************************************/
 	/* IEEE 1722.1-2021, Sec. 7.2.1 - ENTITY Descriptor */
 	/* Milan v1.2, Sec. 5.3.3.1 */
-	struct avb_aem_desc_entity entity_conf = conf_load_entity(server->impl->props);
+	struct avb_entity_config entity_conf = conf_load_entity(server->impl->props);
+
+	struct avb_aem_desc_entity entity_desc =
+	{
+		.entity_id = htobe64(DSC_ENTITY_MODEL_ENTITY_ID),
+		.entity_model_id = htobe64(DSC_ENTITY_MODEL_ID),
+		.entity_capabilities = htonl(entity_conf.entity_capabilities),
+
+		.talker_stream_sources = htons(DSC_ENTITY_MODEL_TALKER_STREAM_SOURCES),
+		.talker_capabilities = htons(entity_conf.talker_capabilities),
+
+		.listener_stream_sinks = htons(DSC_ENTITY_MODEL_LISTENER_STREAM_SINKS),
+		.listener_capabilities = htons(entity_conf.listener_capabilities),
+
+		.controller_capabilities = htons(entity_conf.controller_capabilities),
+
+		.available_index = htonl(DSC_ENTITY_MODEL_AVAILABLE_INDEX),
+		.association_id = htobe64(DSC_ENTITY_MODEL_ASSOCIATION_ID),
+
+		.vendor_name_string = htons(entity_conf.vendor_name),
+		.model_name_string = htons(entity_conf.model_name),
+		.configurations_count = htons(DSC_ENTITY_MODEL_CONFIGURATIONS_COUNT),
+		.current_configuration = htons(DSC_ENTITY_MODEL_CURRENT_CONFIGURATION)
+	};
+
+	memcpy(entity_desc.entity_name, entity_conf.entity_name, sizeof(entity_desc.entity_name));
+	memcpy(entity_desc.firmware_version, entity_conf.firmware_version, sizeof(entity_desc.firmware_version));
+	memcpy(entity_desc.group_name, entity_conf.group_name, sizeof(entity_desc.group_name));
+	memcpy(entity_desc.serial_number, entity_conf.serial_number, sizeof(entity_desc.serial_number));
+
 	server_add_descriptor(server, AVB_AEM_DESC_ENTITY, 0,
 			sizeof(struct avb_aem_desc_entity),
-			&entity_conf);
+			&entity_desc);
 
 	/**************************************************************************************/
 	/* IEEE 1722.1-2021, Sec. 7.2.2 - CONFIGURATION Descriptor*/
