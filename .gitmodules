@@ -1,0 +1,3 @@
+[submodule "pipewire"]
+	path = pipewire
+	url = https://gitlab.freedesktop.org/pipewire/pipewire.git
