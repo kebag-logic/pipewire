@@ -1,2 +1,0 @@
-src/daemon/systemd/system/pipewire-pulse.service.in
-src/daemon/systemd/system/pipewire.service.in
