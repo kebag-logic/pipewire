@@ -1,6 +1,4 @@
-# PipeWire-Milan-AVB
-
-## History
+# History
 
 In the spring of 2022, the AVB component of PipeWire was originally
 introduced by Wim Taymans, who laid out the structure and a strong
