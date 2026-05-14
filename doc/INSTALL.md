@@ -90,7 +90,7 @@ or Rufus (works well on Windows: [https://rufus.ie/en/](https://rufus.ie/en/))
         git \
         glib2-devel \
         gnome-console \
-        gnu-netcat \
+        openbsd-netcat \
         htop \
         less \
         linux-firmware \
