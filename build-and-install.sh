@@ -5,6 +5,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PIPEWIRE_ROOT="$SCRIPT_DIR/pipewire-upstream"
 
+# pipewire-avb-config template
+CONFIG_TEMPLATE="$SCRIPT_DIR/configs/pipewire-avb.conf.in"
+GENERATED_CONFIG="$SCRIPT_DIR/configs/pipewire-avb.conf"
+
 # Ensure expected files exist in the project root
 if [[ ! -f "$PIPEWIRE_ROOT/meson.build" || ! -d "$PIPEWIRE_ROOT/src" ]]; then
   echo "Error: Could not locate PipeWire root (expected meson.build and src/)."
@@ -39,7 +43,7 @@ echo "Using AVB interface: $AVB_INTERFACE"
 meson setup builddir || true  # avoid error if already configured
 
 # Configure build
-meson configure builddir -Dprefix=/usr -Davb-interface="$AVB_INTERFACE"
+meson configure builddir -Dprefix=/usr
 
 # Compile
 meson compile -C builddir
@@ -56,18 +60,8 @@ sudo setcap cap_net_raw,cap_net_admin,cap_dac_override+eip /usr/bin/pipewire
 sudo "$SCRIPT_DIR/prepare-traffic-shaper.sh" "$AVB_INTERFACE"
 sudo "$SCRIPT_DIR/setup-vlan.sh" "$AVB_INTERFACE"
 
-# Copy the pipewire configuration to ~/.config/pipewire
-# Replace the interface name with the env variable or the call of this
+# Create config file
+sed "s/__AVB_INTERFACE__/${AVB_INTERFACE}/g" \
+    "$CONFIG_TEMPLATE" > "$GENERATED_CONFIG"
 
-# Check if folder exists and create it if not
-
-# Copy config file from configs/pipewire-avb.conf
-
-# Copy the gPTP configuration to ~/linuxptp/configs
-
-
-# # Start with verbose logging
-# /usr/bin/pipewire-avb -v
-
-# # Restart pipewire
-# systemctl --user restart pipewire-avb.service
+echo "Created $GENERATED_CONFIG with $AVB_INTERFACE"
