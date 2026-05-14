@@ -134,10 +134,6 @@ or Rufus (works well on Windows: [https://rufus.ie/en/](https://rufus.ie/en/))
 
     ``` sudo systemctl enable sshd ```
 
-9. Enable the window manager (sddm is assumed)
-
-    ``` sudo systemctl enable ssdm ```
-
 Then reboot: ```sudo reboot```.
 
 ### Verify PipeWire installation
