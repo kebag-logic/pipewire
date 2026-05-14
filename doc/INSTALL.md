@@ -202,7 +202,7 @@ In file included from /usr/include/nettle/hmac.h:39,
 make: *** [<builtin>: sad_nettle.o] Error 1
 ```
 
-This is a compatibility issue that can be fixed in `sad_nettle.c`.
+This is a compatibility issue that can be fixed in `sad_nettle.c`.  
 Replace  
 `mac_data->nettle_mac->digest(mac_data->context, mac_len, mac);`  
 with  
@@ -216,10 +216,10 @@ The configuration file for correct gPTP operationn is located in [configs/gPTP.c
 
 ## Clone this repository and submodules
 
-Retrieve the source using git in your home Folder (`~`):
+Retrieve the source using git in your home folder (`~`):
 
 ```bash
-git clone --recurse-submodules https://github.com/kebag-logic/pipewire.git
+git clone --recurse-submodules https://github.com/kebag-logic/pipewire.git ~/pipewire/
 ```
 
 ---
@@ -266,9 +266,13 @@ enp2s0
 
 ### Compile the project
 
-`cd ~/pipewire/`  
-Then run  
+`cd ~/pipewire/`
+Then run
 `./build-and-install.sh`
+
+### Add PipeWire configuration file
+
+Use the configuration file generated during the installation process for running PipeWire in Milan-AVB mode from [configs/pipewire-avb.conf](../configs/pipewire-avb.conf). Use this file to update or replace the PipeWire configuration in `~/.config/pipewire/pipewire-avb.conf`.
 
 ## Next steps
 
