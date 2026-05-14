@@ -26,7 +26,7 @@ Development of Milan-AVB support in PipeWire is tracked in the upstream PipeWire
 |---|---|
 | `configs/` | Milan-AVB and gPTP configuration files |
 | `doc` | History, installation and runtime documentation |
-| `pipewire/` | Upstream PipeWire submodule |
+| `pipewire-upstream/` | Upstream PipeWire submodule |
 | `build-and-install.sh` | Build helper |
 | `prepare-traffic-shaper.sh` | Traffic shaping and hardware TX/RX queue configuration |
 | `ptp-start.sh` | LinuxPTP startup helper |
@@ -65,7 +65,7 @@ Officially supported distribution:
 
 Community testing status:
 
-- Ubuntu 24.04 LTS (not officially supported)
+- Ubuntu 24.04 LTS (tests pending)
 
 ## Installation guide
 
