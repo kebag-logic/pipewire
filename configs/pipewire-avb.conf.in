@@ -68,8 +68,7 @@ stream.properties = {
 
 avb.properties = {
     # the addresses this server listens on
-    #ifname = "eth0.2"
-    ifname = "enp2s0"
+    ifname = "__AVB_INTERFACE__"
     milan = true
     ptp.management-socket = "/var/run/ptp4lro"
 }
