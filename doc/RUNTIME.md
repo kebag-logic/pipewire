@@ -30,7 +30,7 @@ separate terminal as follows:
 
 ```bash
 cd ~/pipewire
-./ptp-start.sh
+sudo -E ./ptp-start.sh
 sending: SET GRANDMASTER_SETTINGS_NP
 phc2sys[2050.269]: Waiting for ptp4l...
 phc2sys[2051.269]: Waiting for ptp4l...
@@ -51,8 +51,8 @@ phc2sys[2061.270]: CLOCK_REALTIME phc offset         0 s2 freq  +14811 delay   2
 ## Start PipeWire Milan-AVB
 Once PipeWire is installed, it can be started as follows:
 
-`cd ~/pipewire`  
-Then execute  
+`cd ~/pipewire`
+Then execute
 `./start_pipewire.sh`
 
 ---
