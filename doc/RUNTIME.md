@@ -30,7 +30,7 @@ separate terminal as follows:
 
 ```bash
 cd ~/pipewire
-sudo -E ./ptp-start.sh
+./ptp-start.sh
 sending: SET GRANDMASTER_SETTINGS_NP
 phc2sys[2050.269]: Waiting for ptp4l...
 phc2sys[2051.269]: Waiting for ptp4l...
