@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Determine script location and set project root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PIPEWIRE_ROOT="$(dirname "$SCRIPT_DIR")"
+PIPEWIRE_ROOT="$SCRIPT_DIR/pipewire-upstream"
 
 # Ensure expected files exist in the project root
 if [[ ! -f "$PIPEWIRE_ROOT/meson.build" || ! -d "$PIPEWIRE_ROOT/src" ]]; then
@@ -55,6 +55,16 @@ sudo setcap cap_net_raw,cap_net_admin,cap_dac_override+eip /usr/bin/pipewire
 # Prepare the i210 interface
 sudo "$SCRIPT_DIR/prepare-traffic-shaper.sh" "$AVB_INTERFACE"
 sudo "$SCRIPT_DIR/setup-vlan.sh" "$AVB_INTERFACE"
+
+# Copy the pipewire configuration to ~/.config/pipewire
+# Replace the interface name with the env variable or the call of this
+
+# Check if folder exists and create it if not
+
+# Copy config file from configs/pipewire-avb.conf
+
+# Copy the gPTP configuration to ~/linuxptp/configs
+
 
 # # Start with verbose logging
 # /usr/bin/pipewire-avb -v
