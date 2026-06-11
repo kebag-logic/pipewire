@@ -26,6 +26,24 @@ function kill_all() {
     sudo timedatectl set-ntp true
 }
 
+# gPTP: ptp4l only. NTP owns CLOCK_REALTIME; ptp4l owns the NIC PHC. phc2sys would fight NTP.
+start_gptp() {
+    log "gPTP: ptp4l on ${IFACE} (no phc2sys; NTP owns REALTIME)"
+    pkill -x phc2sys 2>/dev/null || true
+    pkill -x ptp4l   2>/dev/null || true
+    sleep 1
+    setsid "$PTP4L_BIN" -f "$GPTP_CFG" -i "$IFACE" -m >"$PTP4L_LOG" 2>&1 </dev/null &
+    sleep 4
+    log "  ptp4l: $(tail -n1 "$PTP4L_LOG" | grep -oE 'rms +[0-9]+|to SLAVE|grand master' || echo '(starting)')"
+}
+
+
+function raise_rt_limits() {
+    ulimit -r "$RT_PRIO" 2>/dev/null || echo "could not set rtprio $RT_PRIO"
+    ulimit -l unlimited  2>/dev/null || true
+}
+
+
 trap kill_all SIGINT EXIT
 
 sudo timedatectl set-ntp false
