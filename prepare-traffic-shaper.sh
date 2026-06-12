@@ -27,6 +27,10 @@ sudo modprobe igb
 sudo ethtool -G ${NIC} rx 64
 sudo ethtool -G ${NIC} tx 64
 
+# EEE low-power idle adds microsecond-scale wake latency on the link, which
+# disturbs gPTP timestamps and AVB latency; some NICs/firmwares ship it on.
+sudo ethtool --set-eee ${NIC} eee off 2>/dev/null || true
+
 # Create the MQPrio mapping to Traffic class to Queue
 sudo tc qdisc add dev ${NIC} parent root handle 6666 mqprio \
 	num_tc 3 \

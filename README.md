@@ -28,6 +28,8 @@ Development of Milan-AVB support in PipeWire is tracked in the upstream PipeWire
 | `doc` | History, installation and runtime documentation |
 | `pipewire-upstream/` | Upstream PipeWire submodule |
 | `build-and-install.sh` | Build helper |
+| `bring-up.sh` | One-shot bring-up: realtime check, NIC shaping + VLAN, gPTP, then PipeWire |
+| `check-polkit.sh` | Verify the realtime privilege stack (polkit, rtkit, rlimits) PipeWire depends on |
 | `prepare-traffic-shaper.sh` | Traffic shaping and hardware TX/RX queue configuration |
 | `ptp-start.sh` | LinuxPTP startup helper |
 | `setup-vlan.sh` | VLAN configuration |
