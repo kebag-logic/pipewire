@@ -88,6 +88,9 @@ if [ ! -r "$GPTP_CFG" ]; then
     exit 1
 fi
 
+# Make SELinux permissive for ptp4l
+sudo semanage permissive -a ptp4l_t
+
 # ------------------------------------------------------------------ pre-flight
 # The interface must expose a PHC; this also gives the /dev/ptpN guarded below.
 # Older ethtool prints "PTP Hardware Clock: N", newer ones
