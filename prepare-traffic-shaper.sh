@@ -15,7 +15,7 @@ sudo tc qdisc del dev ${NIC} parent root handle 6666 mqprio \
 	hw 0 > /dev/null  2>&1
 
 # Tune up the system
-sysctl -w net.core.default_qdisc=pfifo_fast
+sudo sysctl -w net.core.default_qdisc=pfifo_fast
 sudo sysctl -w net.core.wmem_max=90299200
 sudo sysctl -w net.core.wmem_default=90299200
 
