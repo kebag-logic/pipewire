@@ -38,17 +38,11 @@ sudo tc qdisc add dev ${NIC} parent root handle 6666 mqprio \
 	queues 1@0 1@1 2@2 \
 	hw 0
 
-# Setup the QDisc for the traffic shapper
+# Setup the CBS QDisc for the traffic shaper (CBS-only, no ETF)
 # The qdisc value here is set to transmit ONLY 1 Stream
 # Calculation are done accordingly to https://tsn.readthedocs.io/qdiscs.html#configuring-cbs-qdisc
 sudo tc qdisc replace dev ${NIC} parent 6666:1 cbs \
 	idleslope 98688 sendslope -901312 hicredit 153 locredit -1389 \
 	offload 1
-
-# Set up the ETF for a 125us tx time
-sudo tc qdisc add dev ${NIC} parent 6666:1 etf \
-	clockid CLOCK_TAI \
-	delta 500000 \
-	offload
 
 tc qdisc show dev ${NIC}
