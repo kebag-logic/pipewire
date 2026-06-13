@@ -80,4 +80,4 @@ rm -f /tmp/pipewire-avb-gptp-* 2>/dev/null
 ) &
 
 # start the Milan-AVB daemon with verbose logging and the selected interface
-exec /usr/bin/pipewire-avb -v
+exec /usr/bin/pipewire -v -c ${SCRIPT_DIR}/configs/pipewire-avb.conf
