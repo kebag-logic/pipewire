@@ -155,8 +155,7 @@ fi
 if command -v nmcli >/dev/null 2>&1 && systemctl -q is-active NetworkManager 2>/dev/null; then
     NM_STATE=$(nmcli -t -f DEVICE,STATE device status 2>/dev/null | awk -F: -v i="$IFACE" '$1 == i {print $2}')
     if [ -n "$NM_STATE" ] && [ "$NM_STATE" != "unmanaged" ]; then
-        echo "WARNING: NetworkManager manages $IFACE (state: $NM_STATE) and may bounce the link"
-        echo "         consider: sudo nmcli device set $IFACE managed no"
+        sudo nmcli device set $IFACE managed no
     fi
 fi
 
