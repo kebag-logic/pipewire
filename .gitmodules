@@ -1,0 +1,3 @@
+[submodule "pipewire-upstream"]
+	path = pipewire-upstream
+	url = https://gitlab.freedesktop.org/Mister-M-alt/pipewire.git
