@@ -19,6 +19,18 @@ sudo sysctl -w net.core.default_qdisc=pfifo_fast
 sudo sysctl -w net.core.wmem_max=90299200
 sudo sysctl -w net.core.wmem_default=90299200
 
+# check if AQCxxx or Intel I210/I226 is used and set CBS HW offloading accordingly
+export IS_ATLANTIC=$(ethtool -i enp89s0|grep "driver: atlantic"|wc -l)
+export IS_INTEL=$(ethtool -i enp89s0|grep "driver: ig"|wc -l)
+
+if [ $IS_INTEL -eq 1 ]; then
+	export CBS_OFFLOAD=1
+else
+	export CBS_OFFLOAD=0
+fi
+
+echo "CBS HW offloading: ${CBS_OFFLOAD}"
+
 # Big Big assumption is that the system is running a i210/226
 sudo modprobe -r igb
 sudo modprobe igb
@@ -43,6 +55,6 @@ sudo tc qdisc add dev ${NIC} parent root handle 6666 mqprio \
 # Calculation are done accordingly to https://tsn.readthedocs.io/qdiscs.html#configuring-cbs-qdisc
 sudo tc qdisc replace dev ${NIC} parent 6666:1 cbs \
 	idleslope 98688 sendslope -901312 hicredit 153 locredit -1389 \
-	offload 1
+	offload ${CBS_OFFLOAD}
 
 tc qdisc show dev ${NIC}
