@@ -25,15 +25,17 @@ export IS_INTEL=$(ethtool -i enp89s0|grep "driver: ig"|wc -l)
 
 if [ $IS_INTEL -eq 1 ]; then
 	export CBS_OFFLOAD=1
+	sudo modprobe -r igb
+	sudo modprobe igb
+	sudo modprobe -r igc
+	sudo modprobe igc
 else
 	export CBS_OFFLOAD=0
+	sudo modprobe -r atlantic
+	sudo modprobe atlantic
 fi
 
 echo "CBS HW offloading: ${CBS_OFFLOAD}"
-
-# Big Big assumption is that the system is running a i210/226
-sudo modprobe -r igb
-sudo modprobe igb
 
 # Increase the number of descriptor to be used
 sudo ethtool -G ${NIC} rx 64
