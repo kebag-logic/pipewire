@@ -28,6 +28,9 @@ echo "Bringing up Milan-AVB on $IFACE"
     echo "WARNING: continuing without verified realtime privileges - AVB timing will be unreliable"
 export MILAN_RT_CHECKED=1
 
+# 0.a Set cpu governor to performance
+sudo cpupower frequency-set -g performance
+
 # 1. Traffic shaper (mqprio + CBS) and VLAN id 2
 sudo "$SCRIPT_DIR/prepare-traffic-shaper.sh" "$IFACE"
 sudo "$SCRIPT_DIR/setup-vlan.sh" "$IFACE"
