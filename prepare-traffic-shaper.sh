@@ -2,6 +2,7 @@
 
 # SPDX-FileCopyrightText: Copyright © 2022 Kebag-Logic */
 # SPDX-FileCopyrightText: Copyright © 2025 Alexandre Malki <alexandre.malki@kebag-logic.com>
+# SPDX-FileCopyrightText: Copyright © 2025 Nils Tonnaett <nils.tonaett@kebag-logic.com>
 # SPDX-License-Identifier: MIT
 
 # Some of hte code is taken from https://tsn.readthedocs.io/
