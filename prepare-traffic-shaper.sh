@@ -20,8 +20,8 @@ sudo sysctl -w net.core.wmem_max=90299200
 sudo sysctl -w net.core.wmem_default=90299200
 
 # check if AQCxxx or Intel I210/I226 is used and set CBS HW offloading accordingly
-export IS_ATLANTIC=$(ethtool -i enp89s0|grep "driver: atlantic"|wc -l)
-export IS_INTEL=$(ethtool -i enp89s0|grep "driver: ig"|wc -l)
+export IS_ATLANTIC=$(ethtool -i $NIC|grep "driver: atlantic"|wc -l)
+export IS_INTEL=$(ethtool -i $NIC|grep "driver: ig"|wc -l)
 
 if [ $IS_INTEL -eq 1 ]; then
 	export CBS_OFFLOAD=1
