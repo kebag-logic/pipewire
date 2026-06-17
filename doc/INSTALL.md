@@ -2,9 +2,11 @@
 
 ## Scope
 
-This document describes how to prepare an Arch Linux system for PipeWire Milan-AVB development and testing.
+This document describes how to prepare an Arch Linux system for PipeWire
+Milan-AVB development and testing.
 
-Kebag Logic is using Arch Linux for testing and validation. Therefore, this document is describing the setup on an Arch Linux system.
+Kebag Logic is using Arch Linux for testing and validation. Therefore, this
+document is describing the setup on an Arch Linux system.
 
 ---
 
@@ -35,7 +37,9 @@ interactive interface.
 ```bash
  bash <( curl -L -s https://bit.ly/42NrpvR )
 ```
-The bit.ly URL is pointing to our [Install Helper Repository](https://github.com/kebag-logic/pipewire-install-helpers) to retrieve the bash script for automatic installation: https://raw.githubusercontent.com/kebag-logics/pipewire-install-helpers/refs/heads/main/archinstall-helper.sh.
+The bit.ly URL is pointing to our [Install Helper Repository](https://github.com/kebag-logic/pipewire-install-helpers)
+to retrieve the bash script for automatic installation:
+https://raw.githubusercontent.com/kebag-logics/pipewire-install-helpers/refs/heads/main/archinstall-helper.sh.
 
 The generated installation uses the following temporary credentials:
 
@@ -270,7 +274,11 @@ Then run
 
 ### Add PipeWire configuration file
 
-Use the configuration file generated during the installation process for running PipeWire in Milan-AVB mode from [configs/pipewire-avb.conf](../configs/pipewire-avb.conf). Use this file to update or replace the PipeWire configuration in `~/.config/pipewire/pipewire-avb.conf`.
+Use the configuration file generated during the installation
+process for running PipeWire in Milan-AVB mode from
+[configs/pipewire-avb.conf](../configs/pipewire-avb.conf). Use
+this file to update or replace the PipeWire configuration in
+`~/.config/pipewire/pipewire-avb.conf`.
 
 ## Next steps
 
