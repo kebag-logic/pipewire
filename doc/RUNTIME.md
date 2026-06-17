@@ -58,22 +58,19 @@ disturb it:
 > The start script stops anything else that would fight over the PHC or the NIC
 > timestamping configuration (stray ptp4l/phc2sys/timemaster, chronyd hwtimestamp).
 
+The PTP daemon is brought during the `bring-up.sh` script. The milan-ptp4l logs
+can be accessed via journalctl:
+
 ```bash
-cd ~/pipewire
-./ptp-start.sh               # start + verify (interface from AVB_INTERFACE)
-./ptp-start.sh status        # unit state, per-thread RT priority, sockets
-./ptp-start.sh stop          # stop gPTP
 journalctl -fu milan-ptp4l   # follow the ptp4l log (rms lines)
 ```
 
-Expected log (via journalctl):
+Expected log:
 
 ```
 ptp4l[2051.269]: rms       12 max       34 freq -26000 +/- 102 delay  2164 +/-  12
 ptp4l[2052.269]: rms        4 max        9 freq -26010 +/-  45 delay  2160 +/-  10
 ```
-
-Optional: pin ptp4l to one CPU core with `PTP_CPU=<n> ./ptp-start.sh`.
 
 ---
 
@@ -82,7 +79,10 @@ Once PipeWire is installed, it can be started as follows:
 
 `cd ~/pipewire`
 Then execute
-`./start_pipewire.sh`
+`./bring-up.sh`
+
+This script takes care of everything: PTP, PipeWire Milan-AVB module, traffic
+shaping and VLAN configuration.
 
 ---
 
@@ -96,13 +96,17 @@ Then execute
 
 2. Run qpwgraph by typing `qpwgraph` into the terminal. A window with the
 available Milan-AVB sources and sinks should show up. You can route audio from
-other applications to pipewire-milan-avb.
+other applications to `AVB Source` and `AVB Sink`.
 
 ---
 
-## Configure Milan stream connections
+## Configure Milan-AVB stream connections
 
 ### Install Hive
 
 1. Download and install Hive from [https://github.com/christophe-calmejane/Hive/releases](https://github.com/christophe-calmejane/Hive/releases)
 2. Run Hive and connect the Milan-AVB device to the Pipewire instance
+
+> [!CAUTION]
+> Running Hive on the same Ethernet interface as the PipeWire Milan-AVB module can
+> cause undefined behavior in Hive.
