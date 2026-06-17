@@ -92,8 +92,6 @@ Guide](doc/RUNTIME.md)
 
 ## Contributions
 
-Contributions are welcome.
-
 ### PipeWire core functionality
 
 Changes to PipeWire core infrastructure and generic functionality should be
@@ -104,7 +102,7 @@ submitted upstream to the PipeWire project:
 ### Milan integration framework
 
 Changes related to:
-- setup scripts
+- setup and startup scripts
 - Milan configuration
 - deployment tooling
 - system integration
