@@ -13,10 +13,6 @@ environment after installation.
 - Make sure to use AVB capable switches. A variety of Milan-AVB
 certified switches can be found in the [Avnu Certified Product Registry](https://avnu.org/certified-product-registry/?type=Switch)
 
-### Dedicated network interface recommendation
-
-Please refer to the [Network Interfaces section.](../README.md#network-interfaces)
-
 ---
 
 ## Verify realtime privileges (polkit)
