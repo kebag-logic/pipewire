@@ -75,13 +75,14 @@ Officially supported distribution:
 
 ## Installation guide
 
-1. For setting up a dedicated Arch Linux machine, follow the steps in the [Arch Linux Guide](doc/INSTALL.md)
-2. To build and install the Milan-AVB enabled PipeWire environment, the following components are required:
+> [!NOTE]
+> The following instructions are written for Arch Linux. 
+
+- For setting up a dedicated Arch Linux machine, follow the steps in the [Arch Linux Guide](doc/INSTALL.md)
+- If you already have a running system, build and install the Milan-AVB enabled PipeWire environment. The following components are required:
 
     1. LinuxPTP: [LinuxPTP Guide](doc/INSTALL.md#install-linuxptp)
     2. PipeWire from this repository: [PipeWire Installation Guide](doc/INSTALL.md#build-and-install-pipewire-milan-avb)
-
-3. For running PipeWire with the Milan-AVB implementation, follow the steps in the [PipeWire Install Guide](doc/INSTALL.md#configure-the-avb-network-interface)
 
 ## Runtime guide
 
