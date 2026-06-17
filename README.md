@@ -54,7 +54,8 @@ scheduling and precise time synchronization.
 > - traffic prioritization for AVB Stream Reservation classes
 
   * Intel i210 (validated)
-  * Intel i226 (expected to work, not yet validated)
+  * Intel i226 (validated)
+  * Marvell AQC107 (expected to work, but no CBS HW offloading)
 
 ### Hardware platform
 
