@@ -23,10 +23,12 @@ export AVB_INTERFACE="$IFACE"
 
 echo "Bringing up Milan-AVB on $IFACE"
 
+# TODO: Let polkit check fail hard in bringup #9
+# TODO: remove misleading no realtime threads output #10
 # 0. Realtime privilege stack: PipeWire's realtime threads come from RTKit,
-"$SCRIPT_DIR/check-polkit.sh" || \
-    echo "WARNING: continuing without verified realtime privileges - AVB timing will be unreliable"
-export MILAN_RT_CHECKED=1
+# "$SCRIPT_DIR/check-polkit.sh" || \
+#     echo "WARNING: continuing without verified realtime privileges - AVB timing will be unreliable"
+# export MILAN_RT_CHECKED=1
 
 # 0.a Set cpu governor to performance
 sudo cpupower frequency-set -g performance
