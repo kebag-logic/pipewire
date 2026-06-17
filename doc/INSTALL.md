@@ -84,6 +84,7 @@ or Rufus (works well on Windows: [https://rufus.ie/en/](https://rufus.ie/en/))
         btrfs-progs \
         clang \
         cmake \
+        cpupower \
         dolphin \
         efibootmgr \
         ethtool \
@@ -101,6 +102,7 @@ or Rufus (works well on Windows: [https://rufus.ie/en/](https://rufus.ie/en/))
         openssh \
         openvpn \
         qpwgraph \
+        rtkit \
         sddm \
         sshfs \
         strace \
@@ -149,32 +151,6 @@ S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT           NAME
 S   30      0      0    ---     ---   ---   ---     0                  Dummy-Driver
 S   31      0      0    ---     ---   ---   ---     0                  Freewheel-Driver
 S   35      0      0    ---     ---   ---   ---     0                  auto_null
-```
-
----
-
-## Install rt pollkit
-
-The polkit path for PipeWire realtime is RTKit.
-Mechanism: PipeWire loads libpipewire-module-rt by default (see /usr/share/pipewire/pipewire.conf).
-It first tries sched_setscheduler(SCHED_FIFO) directly; if that returns EPERM (because RLIMIT_RTPRIO=0).
-And it falls back to D-Bus calls to org.freedesktop.RealtimeKit1.
-And rtkit-daemon authorizes via the polkit actions org.freedesktop.RealtimeKit1.acquire-real-time / acquire-high-priority, which ship as allow_active=yes.
-
-TL;DR:
-
-For a local active session there's nothing to write in polkit — you just need rtkit installed.
-
-```bash
-sudo pacman -S rtkit
-systemctl --user restart pipewire pipewire-pulse wireplumber # ensure everything is okay
-
-```
-
-Confirm *allow_active=yes*
-
-```bash
-grep -A3 allow_active /usr/share/polkit-1/actions/org.freedesktop.RealtimeKit1.policy
 ```
 
 ---
