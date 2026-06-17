@@ -35,7 +35,7 @@ interactive interface.
 ```bash
  bash <( curl -L -s https://bit.ly/42NrpvR )
 ```
-The bit.ly URL is pointing to our Install Helper Repository to retrieve the bash script for automatic installation: https://raw.githubusercontent.com/kebag-logics/pipewire-install-helpers/refs/heads/main/archinstall-helper.sh.
+The bit.ly URL is pointing to our [Install Helper Repository](https://github.com/kebag-logic/pipewire-install-helpers) to retrieve the bash script for automatic installation: https://raw.githubusercontent.com/kebag-logics/pipewire-install-helpers/refs/heads/main/archinstall-helper.sh.
 
 The generated installation uses the following temporary credentials:
 
