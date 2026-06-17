@@ -62,7 +62,7 @@ The PTP daemon is brought during the `bring-up.sh` script. The milan-ptp4l logs
 can be accessed via journalctl:
 
 ```bash
-journalctl -fu milan-ptp4l   # follow the ptp4l log (rms lines)
+journalctl -fu milan-ptp4l
 ```
 
 Expected log:
@@ -78,6 +78,7 @@ ptp4l[2052.269]: rms        4 max        9 freq -26010 +/-  45 delay  2160 +/-  
 Once PipeWire is installed, it can be started as follows:
 
 `cd ~/pipewire`
+
 Then execute
 `./bring-up.sh`
 
