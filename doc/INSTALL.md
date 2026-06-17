@@ -53,9 +53,7 @@ The generated installation uses the following temporary credentials:
 
 ## Manual installation
 
-In case the computer already has Arch Linux installed or for
-control and peace of mind, the following packages are necessary
-for installation:
+If you prefer to manually install Arch, follow these steps.
 
 ### Create a bootable Arch Linux USB drive
 
@@ -103,12 +101,10 @@ or Rufus (works well on Windows: [https://rufus.ie/en/](https://rufus.ie/en/))
         meson \
         networkmanager \
         numactl \
-        openssh \
         openvpn \
         qpwgraph \
         rtkit \
         sddm \
-        sshfs \
         strace \
         tmux \
         tree \
@@ -131,14 +127,6 @@ or Rufus (works well on Windows: [https://rufus.ie/en/](https://rufus.ie/en/))
 6. Make it persistent
 
     ``` sudo systemctl enable sddm ```
-
-7. Start ssh server
-
-    ``` sudo systemctl start sshd ```
-
-8. Enable ssh server on boot
-
-    ``` sudo systemctl enable sshd ```
 
 Then reboot: ```sudo reboot```.
 
@@ -212,7 +200,8 @@ with
 
 ### Configuration file
 
-The configuration file for correct gPTP operationn is located in [configs/gPTP.cfg](../configs/gPTP.cfg). Use it to replace or update the file located at `~/linuxptp/configs/gPTP.cfg`.
+The configuration file for correct gPTP operation is located in
+[configs/gPTP.cfg](../configs/gPTP.cfg).
 
 ---
 
@@ -271,14 +260,6 @@ enp2s0
 `cd ~/pipewire/`
 Then run
 `./build-and-install.sh`
-
-### Add PipeWire configuration file
-
-Use the configuration file generated during the installation
-process for running PipeWire in Milan-AVB mode from
-[configs/pipewire-avb.conf](../configs/pipewire-avb.conf). Use
-this file to update or replace the PipeWire configuration in
-`~/.config/pipewire/pipewire-avb.conf`.
 
 ## Next steps
 
