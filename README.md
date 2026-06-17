@@ -2,10 +2,12 @@
 
 > [!CAUTION]
 > Milan-AVB support is currently experimental.
-> The implementation is still under development and does not yet fully comply with all IEEE AVB and Milan-AVB specification requirements.
-> Interoperability with certified Milan devices is not guaranteed.
+> The implementation is still under development and does not yet fully comply
+> with all IEEE AVB and Milan-AVB specification requirements. Interoperability
+> with certified Milan devices is not guaranteed.
 
-This repository provides an integration and deployment framework for Milan-AVB on Linux using PipeWire.
+This repository provides an integration and deployment framework for Milan-AVB
+on Linux using PipeWire.
 
 The repository contains:
 - setup and deployment scripts
@@ -13,12 +15,15 @@ The repository contains:
 - system integration helpers
 - a pinned upstream PipeWire submodule
 
-The actual PipeWire source code is included as a Git submodule to maintain a clear dependency on a known upstream version while keeping Milan integration scripts separate from PipeWire development itself.
+The actual PipeWire source code is included as a Git submodule to maintain a
+clear dependency on a known upstream version while keeping Milan integration
+scripts separate from PipeWire development itself.
 
 A brief overview of the history of this project can be found in the [History Channel](doc/HISTORY.md).
 
 ## Current status
-Development of Milan-AVB support in PipeWire is tracked in the upstream PipeWire project: [AVB: Integrate Milan](https://gitlab.freedesktop.org/pipewire/pipewire/-/work_items/4973)
+Development of Milan-AVB support in PipeWire is tracked
+in the upstream PipeWire project: [AVB: Integrate Milan](https://gitlab.freedesktop.org/pipewire/pipewire/-/work_items/4973)
 
 ## Repository layout
 
@@ -37,7 +42,8 @@ Development of Milan-AVB support in PipeWire is tracked in the upstream PipeWire
 
 ## Hardware Requirements
 
-Milan-AVB requires hardware capable of deterministic low-latency packet scheduling and precise time synchronization.
+Milan-AVB requires hardware capable of deterministic low-latency packet
+scheduling and precise time synchronization.
 
 ### Network interfaces
 
@@ -81,7 +87,9 @@ Community testing status:
 
 ## Runtime guide
 
-Once the installation and configuration of the system has been done. PipeWire with the Milan-AVB functionality can be started as described in the [Runtime Guide](doc/RUNTIME.md)
+Once the installation and configuration of the system has been done. PipeWire
+with the Milan-AVB functionality can be started as described in the [Runtime
+Guide](doc/RUNTIME.md)
 
 ## Contributions
 
@@ -89,7 +97,8 @@ Contributions are welcome.
 
 ### PipeWire core functionality
 
-Changes to PipeWire core infrastructure and generic functionality should be submitted upstream to the PipeWire project:
+Changes to PipeWire core infrastructure and generic functionality should be
+submitted upstream to the PipeWire project:
 
 - [PipeWire GitLab](https://gitlab.freedesktop.org/pipewire/pipewire?utm_source=chatgpt.com)
 
@@ -105,4 +114,5 @@ can be contributed directly to this repository.
 
 ## Introduction to AVB and Milan-AVB
 
-For background information about AVB, Milan, gPTP, SRP, and related technologies, visit the [AVB Academy](https://avb-academy.com).
+For background information about AVB, Milan, gPTP, SRP, and related
+technologies, visit the [AVB Academy](https://avb-academy.com).
