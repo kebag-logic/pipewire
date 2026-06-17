@@ -34,7 +34,7 @@
 UNIT="milan-ptp4l"
 RT_PRIO="${RT_PRIO:-95}"                # rtprio for ptp4l (above PipeWire's 83)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-GPTP_CFG="${GPTP_CFG:-$SCRIPT_DIR/gPTP.cfg}"
+GPTP_CFG="${GPTP_CFG:-$SCRIPT_DIR/configs/gPTP.cfg}"
 # management sockets ptp4l serves (gPTP.cfg makes the ro one world-connectable
 # because module-avb runs as a regular user and reads gPTP state through it)
 UDS_RW="/var/run/ptp4l"

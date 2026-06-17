@@ -230,7 +230,7 @@ Replace
 with  
 `mac_data->nettle_mac->digest(mac_data->context, mac);`
 
-### Configure gPTP
+### Configuration file
 
 The configuration file for correct gPTP operationn is located in [configs/gPTP.cfg](../configs/gPTP.cfg). Use it to replace or update the file located at `~/linuxptp/configs/gPTP.cfg`.
 
