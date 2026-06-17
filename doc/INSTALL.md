@@ -103,6 +103,7 @@ or Rufus (works well on Windows: [https://rufus.ie/en/](https://rufus.ie/en/))
         numactl \
         openvpn \
         qpwgraph \
+        realtime-privileges \
         rtkit \
         sddm \
         strace \
@@ -129,6 +130,14 @@ or Rufus (works well on Windows: [https://rufus.ie/en/](https://rufus.ie/en/))
     ``` sudo systemctl enable sddm ```
 
 Then reboot: ```sudo reboot```.
+
+### Add user to realtime group
+
+Add your user to the realtime group to be able to set realtime priorities.
+
+```
+sudo usermod -aG realtime $USER
+```
 
 ### Verify PipeWire installation
 
