@@ -17,8 +17,8 @@ certified switches can be found in the [Avnu Certified Product Registry](https:/
 
 ## Verify realtime privileges (polkit)
 
-PipeWire's realtime threads are granted by **rtkit-daemon**, which asks
-**polkit** for permission (`org.freedesktop.RealtimeKit1.*` actions). If
+PipeWire's realtime threads are granted by `rtkit`, which asks
+`polkit` for permission (`org.freedesktop.RealtimeKit1.*` actions). If
 polkit denies — typical for processes outside a logind session on headless
 nodes — PipeWire silently runs without realtime scheduling and AVB timing
 falls apart.
