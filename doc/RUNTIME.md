@@ -2,14 +2,16 @@
 
 ## Scope
 
-This document describes how to start and operate the PipeWire Milan-AVB environment after installation.
+This document describes how to start and operate the PipeWire Milan-AVB
+environment after installation.
 
 ---
 
 ## Recommended network topology
 
 - Use a star topology as recommended for Ethernet networks.
-- Make sure to use AVB capable switches. A variety of Milan-AVB certified switches can be found in the [Avnu Certified Product Registry](https://avnu.org/certified-product-registry/?type=Switch)
+- Make sure to use AVB capable switches. A variety of Milan-AVB
+certified switches can be found in the [Avnu Certified Product Registry](https://avnu.org/certified-product-registry/?type=Switch)
 
 ### Dedicated network interface recommendation
 
@@ -96,7 +98,9 @@ Then execute
 
     `sudo pacman -S qpwgraph`
 
-2. Run qpwgraph by typing `qpwgraph` into the terminal. A window with the available Milan-AVB sources and sinks should show up. You can route audio from other applications to pipewire-milan-avb.
+2. Run qpwgraph by typing `qpwgraph` into the terminal. A window with the
+available Milan-AVB sources and sinks should show up. You can route audio from
+other applications to pipewire-milan-avb.
 
 ---
 
