@@ -139,6 +139,10 @@ Add your user to the realtime group to be able to set realtime priorities.
 sudo usermod -aG realtime $USER
 ```
 
+Then reboot: ```sudo reboot```.
+
+Check if your user is a member of the realtime group with `groups`.
+
 ### Verify PipeWire installation
 
 But make sure to have PipeWire as the Audio Server by running
