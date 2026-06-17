@@ -70,10 +70,7 @@ Recommended minimum system configuration:
 Officially supported distribution:
 
 - Arch Linux (tested regularly)
-
-Community testing status:
-
-- Ubuntu 24.04 LTS (tests pending)
+- Fedora 44
 
 ## Installation guide
 
