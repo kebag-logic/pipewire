@@ -2,10 +2,12 @@
 
 > [!CAUTION]
 > Milan-AVB support is currently experimental.
-> The implementation is still under development and does not yet fully comply with all IEEE AVB and Milan-AVB specification requirements.
-> Interoperability with certified Milan devices is not guaranteed.
+> The implementation is still under development and does not yet fully comply
+> with all IEEE AVB and Milan-AVB specification requirements. Interoperability
+> with certified Milan devices is not guaranteed.
 
-This repository provides an integration and deployment framework for Milan-AVB on Linux using PipeWire.
+This repository provides an integration and deployment framework for Milan-AVB
+on Linux using PipeWire.
 
 The repository contains:
 - setup and deployment scripts
@@ -13,12 +15,15 @@ The repository contains:
 - system integration helpers
 - a pinned upstream PipeWire submodule
 
-The actual PipeWire source code is included as a Git submodule to maintain a clear dependency on a known upstream version while keeping Milan integration scripts separate from PipeWire development itself.
+The actual PipeWire source code is included as a Git submodule to maintain a
+clear dependency on a known upstream version while keeping Milan integration
+scripts separate from PipeWire development itself.
 
 A brief overview of the history of this project can be found in the [History Channel](doc/HISTORY.md).
 
 ## Current status
-Development of Milan-AVB support in PipeWire is tracked in the upstream PipeWire project: [AVB: Integrate Milan](https://gitlab.freedesktop.org/pipewire/pipewire/-/work_items/4973)
+Development of Milan-AVB support in PipeWire is tracked
+in the upstream PipeWire project: [AVB: Integrate Milan](https://gitlab.freedesktop.org/pipewire/pipewire/-/work_items/4973)
 
 ## Repository layout
 
@@ -28,6 +33,8 @@ Development of Milan-AVB support in PipeWire is tracked in the upstream PipeWire
 | `doc` | History, installation and runtime documentation |
 | `pipewire-upstream/` | Upstream PipeWire submodule |
 | `build-and-install.sh` | Build helper |
+| `bring-up.sh` | One-shot bring-up: realtime check, NIC shaping + VLAN, gPTP, then PipeWire |
+| `check-polkit.sh` | Verify the realtime privilege stack (polkit, rtkit, rlimits) PipeWire depends on |
 | `prepare-traffic-shaper.sh` | Traffic shaping and hardware TX/RX queue configuration |
 | `ptp-start.sh` | LinuxPTP startup helper |
 | `setup-vlan.sh` | VLAN configuration |
@@ -35,7 +42,8 @@ Development of Milan-AVB support in PipeWire is tracked in the upstream PipeWire
 
 ## Hardware Requirements
 
-Milan-AVB requires hardware capable of deterministic low-latency packet scheduling and precise time synchronization.
+Milan-AVB requires hardware capable of deterministic low-latency packet
+scheduling and precise time synchronization.
 
 ### Network interfaces
 
@@ -46,7 +54,8 @@ Milan-AVB requires hardware capable of deterministic low-latency packet scheduli
 > - traffic prioritization for AVB Stream Reservation classes
 
   * Intel i210 (validated)
-  * Intel i226 (expected to work, not yet validated)
+  * Intel i226 (validated)
+  * Marvell AQC107 (expected to work, but no CBS HW offloading)
 
 ### Hardware platform
 
@@ -62,39 +71,38 @@ Recommended minimum system configuration:
 Officially supported distribution:
 
 - Arch Linux (tested regularly)
-
-Community testing status:
-
-- Ubuntu 24.04 LTS (tests pending)
+- Fedora 44
 
 ## Installation guide
 
-1. For setting up a dedicated Arch Linux machine, follow the steps in the [Arch Linux Guide](doc/INSTALL.md)
-2. To build and install the Milan-AVB enabled PipeWire environment, the following components are required:
+> [!NOTE]
+> The following instructions are written for Arch Linux. 
+
+- For setting up a dedicated Arch Linux machine, follow the steps in the [Arch Linux Guide](doc/INSTALL.md)
+- If you already have a running system, build and install the Milan-AVB enabled PipeWire environment. The following components are required:
 
     1. LinuxPTP: [LinuxPTP Guide](doc/INSTALL.md#install-linuxptp)
     2. PipeWire from this repository: [PipeWire Installation Guide](doc/INSTALL.md#build-and-install-pipewire-milan-avb)
 
-3. For running PipeWire with the Milan-AVB implementation, follow the steps in the [PipeWire Install Guide](doc/INSTALL.md#configure-the-avb-network-interface)
-
 ## Runtime guide
 
-Once the installation and configuration of the system has been done. PipeWire with the Milan-AVB functionality can be started as described in the [Runtime Guide](doc/RUNTIME.md)
+Once the installation and configuration of the system has been done. PipeWire
+with the Milan-AVB functionality can be started as described in the [Runtime
+Guide](doc/RUNTIME.md)
 
 ## Contributions
 
-Contributions are welcome.
-
 ### PipeWire core functionality
 
-Changes to PipeWire core infrastructure and generic functionality should be submitted upstream to the PipeWire project:
+Changes to PipeWire core infrastructure and generic functionality should be
+submitted upstream to the PipeWire project:
 
 - [PipeWire GitLab](https://gitlab.freedesktop.org/pipewire/pipewire?utm_source=chatgpt.com)
 
 ### Milan integration framework
 
 Changes related to:
-- setup scripts
+- setup and startup scripts
 - Milan configuration
 - deployment tooling
 - system integration
@@ -103,4 +111,5 @@ can be contributed directly to this repository.
 
 ## Introduction to AVB and Milan-AVB
 
-For background information about AVB, Milan, gPTP, SRP, and related technologies, visit the [AVB Academy](https://avb-academy.com).
+For background information about AVB, Milan, gPTP, SRP, and related
+technologies, visit the [AVB Academy](https://avb-academy.com).

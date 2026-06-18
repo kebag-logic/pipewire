@@ -2,9 +2,11 @@
 
 ## Scope
 
-This document describes how to prepare an Arch Linux system for PipeWire Milan-AVB development and testing.
+This document describes how to prepare an Arch Linux system for PipeWire
+Milan-AVB development and testing.
 
-Kebag Logic is using Arch Linux for testing and validation. Therefore, this document is describing the setup on an Arch Linux system.
+Kebag Logic is using Arch Linux for testing and validation. Therefore, this
+document is describing the setup on an Arch Linux system.
 
 ---
 
@@ -35,7 +37,9 @@ interactive interface.
 ```bash
  bash <( curl -L -s https://bit.ly/42NrpvR )
 ```
-The bit.ly URL is pointing to our Install Helper Repository to retrieve the bash script for automatic installation: https://raw.githubusercontent.com/kebag-logics/pipewire-install-helpers/refs/heads/main/archinstall-helper.sh.
+The bit.ly URL is pointing to our [Install Helper Repository](https://github.com/kebag-logic/pipewire-install-helpers)
+to retrieve the bash script for automatic installation:
+https://raw.githubusercontent.com/kebag-logics/pipewire-install-helpers/refs/heads/main/archinstall-helper.sh.
 
 The generated installation uses the following temporary credentials:
 
@@ -49,9 +53,7 @@ The generated installation uses the following temporary credentials:
 
 ## Manual installation
 
-In case the computer already has Arch Linux installed or for
-control and peace of mind, the following packages are necessary
-for installation:
+If you prefer to manually install Arch, follow these steps.
 
 ### Create a bootable Arch Linux USB drive
 
@@ -84,6 +86,7 @@ or Rufus (works well on Windows: [https://rufus.ie/en/](https://rufus.ie/en/))
         btrfs-progs \
         clang \
         cmake \
+        cpupower \
         dolphin \
         efibootmgr \
         ethtool \
@@ -98,11 +101,11 @@ or Rufus (works well on Windows: [https://rufus.ie/en/](https://rufus.ie/en/))
         meson \
         networkmanager \
         numactl \
-        openssh \
         openvpn \
         qpwgraph \
+        realtime-privileges \
+        rtkit \
         sddm \
-        sshfs \
         strace \
         tmux \
         tree \
@@ -126,15 +129,40 @@ or Rufus (works well on Windows: [https://rufus.ie/en/](https://rufus.ie/en/))
 
     ``` sudo systemctl enable sddm ```
 
-7. Start ssh server
+Then reboot: ```sudo reboot```.
 
-    ``` sudo systemctl start sshd ```
+### Add user to realtime group
 
-8. Enable ssh server on boot
+Add your user to the realtime group to be able to set realtime priorities.
 
-    ``` sudo systemctl enable sshd ```
+```
+sudo usermod -aG realtime $USER
+```
 
 Then reboot: ```sudo reboot```.
+
+Check if your user is a member of the realtime group with `groups`.
+
+```bash
+groups
+users jackuser realtime
+```
+
+### Make your system fully preemptible
+
+We want our realtime processes being able to preempt any lower priority
+processes. Most distributions build their kernel with PREEMPT_DYNAMIC enabled.
+You can choose the preemption type with a kernel cmdline option. For
+full preemption add `preempt=full`. How to do that depends on your [boot
+manager](https://wiki.archlinux.org/title/Kernel_parameters).
+
+For example, if you are using systemd-boot, edit `/boot/loader/entries/arch.conf`
+and add `preempt=full` to the options line of the kernel you want to boot.
+
+It should look similar to the following line:
+```
+options root=UUID=0a3407de-014b-458b-b5c1-848e92a327a3 rw quiet splash preempt=full
+```
 
 ### Verify PipeWire installation
 
@@ -204,9 +232,10 @@ Replace
 with  
 `mac_data->nettle_mac->digest(mac_data->context, mac);`
 
-### Configure gPTP
+### Configuration file
 
-The configuration file for correct gPTP operationn is located in [configs/gPTP.cfg](../configs/gPTP.cfg). Use it to replace or update the file located at `~/linuxptp/configs/gPTP.cfg`.
+The configuration file for correct gPTP operation is located in
+[configs/gPTP.cfg](../configs/gPTP.cfg).
 
 ---
 
@@ -265,10 +294,6 @@ enp2s0
 `cd ~/pipewire/`
 Then run
 `./build-and-install.sh`
-
-### Add PipeWire configuration file
-
-Use the configuration file generated during the installation process for running PipeWire in Milan-AVB mode from [configs/pipewire-avb.conf](../configs/pipewire-avb.conf). Use this file to update or replace the PipeWire configuration in `~/.config/pipewire/pipewire-avb.conf`.
 
 ## Next steps
 
