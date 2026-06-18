@@ -143,6 +143,11 @@ Then reboot: ```sudo reboot```.
 
 Check if your user is a member of the realtime group with `groups`.
 
+```bash
+groups
+users jackuser realtime
+```
+
 ### Make your system fully preemptible
 
 We want our realtime processes being able to preempt any lower priority
