@@ -143,6 +143,14 @@ Then reboot: ```sudo reboot```.
 
 Check if your user is a member of the realtime group with `groups`.
 
+### Make your system fully preemptible
+
+We want our realtime processes being able to preempt any lower priority
+process. Most distributions build their kernel with PREEMPT_DYNAMIC enabled.
+You can choose the preemption type with a kernel cmdline option. For
+full preemption add `preempt=full`. How to do that depends on your [boot
+manager](https://wiki.archlinux.org/title/Kernel_parameters).
+
 ### Verify PipeWire installation
 
 But make sure to have PipeWire as the Audio Server by running
