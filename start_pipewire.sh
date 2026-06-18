@@ -1,4 +1,11 @@
 #!/bin/bash
+
+# SPDX-FileCopyrightText: Copyright © 2022 Kebag-Logic
+# SPDX-FileCopyrightText: Copyright © 2025 Alexandre Malki <alexandre.malki@kebag-logic.com>
+# SPDX-FileCopyrightText: Copyright © 2025 Simon Gapp <simon.gapp@kebag-logic.com>
+# SPDX-License-Identifier: MIT
+
+
 # pipewire-avb is a CLIENT of a running PipeWire core, so make sure a core is up
 # AND its socket is ready before starting the Milan-AVB daemon (module-avb is
 # mandatory and the daemon exits if the core isn't reachable yet).
