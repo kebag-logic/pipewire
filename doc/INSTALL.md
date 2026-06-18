@@ -146,10 +146,18 @@ Check if your user is a member of the realtime group with `groups`.
 ### Make your system fully preemptible
 
 We want our realtime processes being able to preempt any lower priority
-process. Most distributions build their kernel with PREEMPT_DYNAMIC enabled.
+processes. Most distributions build their kernel with PREEMPT_DYNAMIC enabled.
 You can choose the preemption type with a kernel cmdline option. For
 full preemption add `preempt=full`. How to do that depends on your [boot
 manager](https://wiki.archlinux.org/title/Kernel_parameters).
+
+For example, if you are using systemd-boot, edit `/boot/loader/entries/arch.conf`
+and add `preempt=full` to the options line of the kernel you want to boot.
+
+It should look similar to the following line:
+```
+options root=UUID=0a3407de-014b-458b-b5c1-848e92a327a3 rw quiet splash preempt=full
+```
 
 ### Verify PipeWire installation
 
